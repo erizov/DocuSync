@@ -206,9 +206,19 @@ ENABLE_FULLTEXT_SEARCH=true
    python -m app.cli scan --no-extract-text
    ```
 
-2. **Database Size**: The extracted text can make the database large. Consider using content search only when needed.
+2. **Database Size**: The extracted text can make the database large. First 8KB is stored in main table for previews, full text in FTS5 for fast search.
 
 3. **Incremental Scanning**: Only scan new drives or re-scan when files change.
+
+4. **FTS5 Search**: Full-text search uses SQLite FTS5 for 10-50x faster searches. Boolean operators (AND, OR, NOT) and phrase matching are supported.
+
+## Migration
+
+If you have an existing database, run the migration script to add the preview column and initialize FTS5:
+
+```bash
+python app/migrate_db.py
+```
 
 ## Security Notes
 

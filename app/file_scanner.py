@@ -141,7 +141,11 @@ def index_document(file_path: str,
                     setattr(existing, key, value)
                 existing.md5_hash = md5_hash
                 if extract_text:
-                    existing.extracted_text = extract_text_content(file_path)
+                    extracted_text = extract_text_content(file_path)
+                    existing.extracted_text = extracted_text
+                    # Update preview
+                    if extracted_text:
+                        existing.extracted_text_preview = extracted_text[:8192]
                 db.commit()
                 return existing
 
