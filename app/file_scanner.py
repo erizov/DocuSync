@@ -206,51 +206,86 @@ def extract_text_content(file_path: str) -> Optional[str]:
 
 def extract_pdf_text(file_path: str) -> Optional[str]:
     """Extract text from PDF file."""
-    try:
-        import pdfplumber
-        text_content = []
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                try:
-                    text = page.extract_text()
-                    if text:
-                        text_content.append(text)
-                except Exception:
-                    # Skip corrupted pages, continue with next page
-                    continue
-        return "\n".join(text_content) if text_content else None
-    except Exception as e:
-        # Try PyPDF2 as fallback for corrupted PDFs
+    import warnings
+    import io
+    import sys
+    
+    # Suppress PDF warnings and errors
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        # Redirect stderr to suppress PDF library errors
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        
         try:
-            import PyPDF2
-            text_content = []
-            with open(file_path, "rb") as f:
-                pdf_reader = PyPDF2.PdfReader(f, strict=False)
-                for page in pdf_reader.pages:
-                    try:
-                        text = page.extract_text()
-                        if text:
-                            text_content.append(text)
-                    except Exception:
-                        continue
-            return "\n".join(text_content) if text_content else None
+            try:
+                import pdfplumber
+                text_content = []
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        try:
+                            text = page.extract_text()
+                            if text:
+                                text_content.append(text)
+                        except Exception:
+                            # Skip corrupted pages, continue with next page
+                            continue
+                result = "\n".join(text_content) if text_content else None
+                sys.stderr = old_stderr
+                return result
+            except Exception:
+                # Try PyPDF2 as fallback for corrupted PDFs
+                try:
+                    import PyPDF2
+                    text_content = []
+                    with open(file_path, "rb") as f:
+                        pdf_reader = PyPDF2.PdfReader(f, strict=False)
+                        for page in pdf_reader.pages:
+                            try:
+                                text = page.extract_text()
+                                if text:
+                                    text_content.append(text)
+                            except Exception:
+                                continue
+                    result = "\n".join(text_content) if text_content else None
+                    sys.stderr = old_stderr
+                    return result
+                except Exception:
+                    # Silently skip if both methods fail
+                    sys.stderr = old_stderr
+                    return None
         except Exception:
-            # Silently skip if both methods fail
+            sys.stderr = old_stderr
             return None
 
 
 def extract_pdf_author(file_path: str) -> Optional[str]:
     """Extract author metadata from PDF."""
-    try:
-        import PyPDF2
-        with open(file_path, "rb") as f:
-            pdf_reader = PyPDF2.PdfReader(f, strict=False)
-            if pdf_reader.metadata and pdf_reader.metadata.author:
-                return pdf_reader.metadata.author
-        return None
-    except Exception as e:
-        # Silently skip corrupted PDFs - don't print error to avoid spam
-        return None
+    import warnings
+    import io
+    import sys
+    
+    # Suppress PDF warnings and errors
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        # Redirect stderr to suppress PDF library errors
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        
+        try:
+            import PyPDF2
+            with open(file_path, "rb") as f:
+                pdf_reader = PyPDF2.PdfReader(f, strict=False)
+                if pdf_reader.metadata and pdf_reader.metadata.author:
+                    author = pdf_reader.metadata.author
+                    sys.stderr = old_stderr
+                    return author
+            sys.stderr = old_stderr
+            return None
+        except Exception:
+            # Silently skip corrupted PDFs - don't print error to avoid spam
+            sys.stderr = old_stderr
+            return None
 
 
 def extract_txt_text(file_path: str) -> Optional[str]:
