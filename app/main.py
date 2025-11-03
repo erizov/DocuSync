@@ -10,6 +10,10 @@ from datetime import datetime, timedelta
 
 from app.database import get_db, Document, init_db, User
 from app.search import search_documents, get_document_statistics
+from app.search_fts5 import (
+    search_documents_fts5, search_documents_fts5_phrase,
+    search_documents_fts5_boolean
+)
 from app.file_scanner import find_duplicates
 from app.auth import (
     authenticate_user, create_access_token, get_current_user,
@@ -261,6 +265,7 @@ async def search(
     q: str = Query(..., description="Search query"),
     drive: Optional[str] = Query(None, description="Filter by drive"),
     search_content: bool = Query(True, description="Search in content"),
+    use_fts5: bool = Query(True, description="Use FTS5 for search"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -270,6 +275,35 @@ async def search(
         search_name=True,
         search_author=True,
         search_content=search_content,
+        drive=drive.upper() if drive else None,
+        use_fts5=use_fts5
+    )
+    return results
+
+
+@app.get("/api/search/phrase", response_model=List[DocumentResponse])
+async def search_phrase(
+    q: str = Query(..., description="Phrase to search for"),
+    drive: Optional[str] = Query(None, description="Filter by drive"),
+    current_user: User = Depends(get_current_user)
+):
+    """Search documents by exact phrase using FTS5."""
+    results = search_documents_fts5_phrase(
+        phrase=q,
+        drive=drive.upper() if drive else None
+    )
+    return results
+
+
+@app.get("/api/search/boolean", response_model=List[DocumentResponse])
+async def search_boolean(
+    q: str = Query(..., description="Boolean query (e.g., 'machine AND learning')"),
+    drive: Optional[str] = Query(None, description="Filter by drive"),
+    current_user: User = Depends(get_current_user)
+):
+    """Search documents using boolean operators (AND, OR, NOT)."""
+    results = search_documents_fts5_boolean(
+        query=q,
         drive=drive.upper() if drive else None
     )
     return results

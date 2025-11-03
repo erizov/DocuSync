@@ -24,8 +24,13 @@ def temp_dir():
 def test_db():
     """Create a test database."""
     test_db_path = tempfile.mktemp(suffix=".db")
-    engine = create_engine(f"sqlite:///{test_db_path}")
+    from app.config import settings
+    original_url = settings.database_url
+    settings.database_url = f"sqlite:///{test_db_path}"
+
+    from app.database import engine, Base, init_db, SessionLocal
     Base.metadata.create_all(bind=engine)
+    init_db()  # This initializes FTS5 and creates default user
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False,
                                 bind=engine)
@@ -34,7 +39,9 @@ def test_db():
     yield session
 
     session.close()
-    os.unlink(test_db_path)
+    settings.database_url = original_url
+    if os.path.exists(test_db_path):
+        os.unlink(test_db_path)
 
 
 @pytest.fixture

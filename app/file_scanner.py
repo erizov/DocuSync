@@ -147,8 +147,13 @@ def index_document(file_path: str,
 
             # Extract text if requested
             extracted_text = None
+            extracted_text_preview = None
+            
             if extract_text:
                 extracted_text = extract_text_content(file_path)
+                # Store first 8KB for preview
+                if extracted_text:
+                    extracted_text_preview = extracted_text[:8192]
 
             # Create document record
             document = Document(
@@ -163,6 +168,7 @@ def index_document(file_path: str,
                 md5_hash=md5_hash,
                 file_type=metadata["file_type"],
                 extracted_text=extracted_text,
+                extracted_text_preview=extracted_text_preview,
             )
 
             # Extract author if available from PDF metadata

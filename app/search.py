@@ -4,13 +4,15 @@ from typing import List, Optional
 from sqlalchemy import or_, func
 
 from app.database import Document, SessionLocal
+from app.search_fts5 import search_documents_fts5
 
 
 def search_documents(query: str,
                      search_name: bool = True,
                      search_author: bool = True,
                      search_content: bool = True,
-                     drive: Optional[str] = None) -> List[Document]:
+                     drive: Optional[str] = None,
+                     use_fts5: bool = True) -> List[Document]:
     """
     Search documents by name, author, or content.
 
@@ -20,10 +22,26 @@ def search_documents(query: str,
         search_author: Search in author names
         search_content: Search in extracted text content
         drive: Filter by drive letter
+        use_fts5: Use FTS5 for full-text search (default: True)
 
     Returns:
         List of matching documents
     """
+    # Use FTS5 if enabled and available
+    if use_fts5:
+        try:
+            return search_documents_fts5(
+                query=query,
+                search_name=search_name,
+                search_author=search_author,
+                search_content=search_content,
+                drive=drive
+            )
+        except Exception:
+            # Fallback to regular search if FTS5 fails
+            pass
+    
+    # Fallback to regular LIKE-based search
     db = SessionLocal()
     try:
         query_lower = query.lower()

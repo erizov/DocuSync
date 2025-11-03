@@ -2,7 +2,7 @@
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, DateTime,
-    BigInteger, Text, Index, Boolean, ForeignKey
+    BigInteger, Text, Index, Boolean, ForeignKey, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -33,6 +33,7 @@ class Document(Base):
     md5_hash = Column(String(32), nullable=False, index=True)
     file_type = Column(String(10), nullable=False, index=True)
     extracted_text = Column(Text, nullable=True)
+    extracted_text_preview = Column(String(8192), nullable=True)
     is_duplicate = Column(Boolean, default=False, index=True)
     preferred_location = Column(Boolean, default=False, index=True)
 
@@ -98,6 +99,82 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
+    init_fts5()
+
+
+def init_fts5() -> None:
+    """Initialize FTS5 virtual table for full-text search."""
+    conn = engine.connect()
+    try:
+        # Create FTS5 virtual table if it doesn't exist
+        # Simple FTS5 table without content option (easier to maintain)
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts 
+            USING fts5(
+                doc_id UNINDEXED,
+                full_text,
+                name,
+                author
+            );
+        """))
+        
+        # Create triggers to keep FTS5 in sync with main table
+        # FTS5 uses rowid, so we use INSERT with rowid
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS documents_fts_insert AFTER INSERT ON documents
+            BEGIN
+                INSERT INTO documents_fts(rowid, doc_id, full_text, name, author)
+                VALUES (new.id, new.id,
+                        COALESCE(new.extracted_text, ''),
+                        COALESCE(new.name, ''),
+                        COALESCE(new.author, ''));
+            END;
+        """))
+        
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS documents_fts_delete AFTER DELETE ON documents
+            BEGIN
+                DELETE FROM documents_fts WHERE rowid = old.id;
+            END;
+        """))
+        
+        conn.execute(text("""
+            CREATE TRIGGER IF NOT EXISTS documents_fts_update AFTER UPDATE ON documents
+            BEGIN
+                DELETE FROM documents_fts WHERE rowid = old.id;
+                INSERT INTO documents_fts(rowid, doc_id, full_text, name, author)
+                VALUES (new.id, new.id,
+                        COALESCE(new.extracted_text, ''),
+                        COALESCE(new.name, ''),
+                        COALESCE(new.author, ''));
+            END;
+        """))
+        
+        conn.commit()
+        
+        # Populate FTS5 with existing documents (only if FTS5 table is empty)
+        try:
+            count_result = conn.execute(text(
+                "SELECT COUNT(*) FROM documents_fts"
+            )).scalar()
+            if count_result == 0:
+                conn.execute(text("""
+                    INSERT INTO documents_fts(rowid, doc_id, full_text, name, author)
+                    SELECT id, id,
+                           COALESCE(extracted_text, ''),
+                           COALESCE(name, ''),
+                           COALESCE(author, '')
+                    FROM documents;
+                """))
+                conn.commit()
+        except Exception:
+            # If FTS5 table doesn't exist or has issues, skip population
+            pass
+    except Exception as e:
+        print(f"Warning: Could not initialize FTS5: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def get_db() -> Session:
