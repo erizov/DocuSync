@@ -9,7 +9,6 @@ pyyaml==6.0.1
 pypdf2==3.0.1
 pdfplumber==0.10.3
 python-multipart==0.0.6
-hashlib-compat==1.0.1
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
