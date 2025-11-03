@@ -128,54 +128,55 @@ def index_document(file_path: str,
         md5_hash = calculate_md5(file_path)
 
         # Check if already indexed
-        db = next(get_db_session())
-        existing = db.query(Document).filter(
-            Document.file_path == file_path
-        ).first()
+        from app.database import SessionLocal
+        db = SessionLocal()
+        try:
+            existing = db.query(Document).filter(
+                Document.file_path == file_path
+            ).first()
 
-        if existing:
-            # Update if needed
-            for key, value in metadata.items():
-                setattr(existing, key, value)
-            existing.md5_hash = md5_hash
+            if existing:
+                # Update if needed
+                for key, value in metadata.items():
+                    setattr(existing, key, value)
+                existing.md5_hash = md5_hash
+                if extract_text:
+                    existing.extracted_text = extract_text_content(file_path)
+                db.commit()
+                return existing
+
+            # Extract text if requested
+            extracted_text = None
             if extract_text:
-                existing.extracted_text = extract_text_content(file_path)
+                extracted_text = extract_text_content(file_path)
+
+            # Create document record
+            document = Document(
+                name=metadata["name"],
+                file_path=metadata["file_path"],
+                drive=metadata["drive"],
+                directory=metadata["directory"],
+                size=metadata["size"],
+                size_on_disc=metadata["size_on_disc"],
+                date_created=metadata["date_created"],
+                date_published=metadata["date_published"],
+                md5_hash=md5_hash,
+                file_type=metadata["file_type"],
+                extracted_text=extracted_text,
+            )
+
+            # Extract author if available from PDF metadata
+            if metadata["file_type"] == ".pdf":
+                author = extract_pdf_author(file_path)
+                if author:
+                    document.author = author
+
+            db.add(document)
             db.commit()
+            db.refresh(document)
+            return document
+        finally:
             db.close()
-            return existing
-
-        # Extract text if requested
-        extracted_text = None
-        if extract_text:
-            extracted_text = extract_text_content(file_path)
-
-        # Create document record
-        document = Document(
-            name=metadata["name"],
-            file_path=metadata["file_path"],
-            drive=metadata["drive"],
-            directory=metadata["directory"],
-            size=metadata["size"],
-            size_on_disc=metadata["size_on_disc"],
-            date_created=metadata["date_created"],
-            date_published=metadata["date_published"],
-            md5_hash=md5_hash,
-            file_type=metadata["file_type"],
-            extracted_text=extracted_text,
-        )
-
-        # Extract author if available from PDF metadata
-        if metadata["file_type"] == ".pdf":
-            author = extract_pdf_author(file_path)
-            if author:
-                document.author = author
-
-        db.add(document)
-        db.commit()
-        db.refresh(document)
-        db.close()
-
-        return document
 
     except Exception as e:
         print(f"Error indexing {file_path}: {e}")
