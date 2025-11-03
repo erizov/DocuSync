@@ -224,18 +224,33 @@ def duplicates():
                         keep_doc = docs[0]
 
                     # Delete others
+                    deleted_files = []
                     for doc in docs:
                         if doc.id != keep_doc.id:
                             try:
                                 import os
                                 if os.path.exists(doc.file_path):
                                     os.remove(doc.file_path)
+                                    deleted_files.append((doc.file_path, doc.size))
                                 db.delete(doc)
                                 deleted_count += 1
                             except Exception as e:
                                 console.print(
                                     f"[red]Error deleting {doc.file_path}: {e}[/red]"
                                 )
+
+                    # Log deletion activity
+                    if deleted_files:
+                        from app.reports import log_activity
+                        total_space = sum(size for _, size in deleted_files)
+                        log_activity(
+                            activity_type="delete",
+                            description=f"Deleted {len(deleted_files)} duplicate files",
+                            document_path=deleted_files[0][0] if deleted_files else None,
+                            space_saved_bytes=total_space,
+                            operation_count=len(deleted_files),
+                            user_id=None
+                        )
 
                 db.commit()
 
@@ -369,6 +384,138 @@ def stats():
 
     console.print(Panel(panel_content, title="Document Statistics",
                         box=box.ROUNDED))
+
+
+@app.command()
+def reports(
+    report_type: str = typer.Argument(
+        ..., help="Report type: activities, space-saved, operations"
+    ),
+    activity_type: Optional[str] = typer.Option(
+        None, "--type", "-t", help="Filter by activity type"
+    ),
+    start_date: Optional[str] = typer.Option(
+        None, "--start", "-s", help="Start date (YYYY-MM-DD)"
+    ),
+    end_date: Optional[str] = typer.Option(
+        None, "--end", "-e", help="End date (YYYY-MM-DD)"
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-l", help="Maximum number of results"
+    )
+):
+    """Show reports."""
+    from app.reports import (
+        get_activities, get_space_saved_report, get_operations_report
+    )
+    from datetime import datetime
+
+    if report_type == "activities":
+        activities = get_activities(activity_type=activity_type, limit=limit)
+        if not activities:
+            console.print("[yellow]No activities found[/yellow]")
+            return
+
+        table = Table(title=f"Recent Activities ({len(activities)} shown)",
+                      box=box.ROUNDED)
+        table.add_column("Type", style="cyan")
+        table.add_column("Description", style="dim")
+        table.add_column("Space Saved", justify="right")
+        table.add_column("Operations", justify="right")
+        table.add_column("Date", style="magenta")
+
+        for activity in activities:
+            table.add_row(
+                activity.activity_type,
+                activity.description[:60] + "..."
+                if len(activity.description) > 60
+                else activity.description,
+                format_size(activity.space_saved_bytes),
+                str(activity.operation_count),
+                activity.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            )
+        console.print(table)
+
+    elif report_type == "space-saved":
+        start = None
+        end = None
+
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+            except ValueError:
+                console.print("[red]Invalid start date format. Use YYYY-MM-DD[/red]")
+                return
+
+        if end_date:
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                console.print("[red]Invalid end date format. Use YYYY-MM-DD[/red]")
+                return
+
+        report = get_space_saved_report(start_date=start, end_date=end)
+
+        panel_content = f"""
+[cyan]Total Space Saved:[/cyan] {format_size(report['total_space_saved_bytes'])}
+[cyan]Total Operations:[/cyan] {report['total_operations']}
+
+[yellow]Breakdown by Activity Type:[/yellow]
+"""
+
+        for activity_type, data in report['breakdown'].items():
+            panel_content += (
+                f"\n  {activity_type}:\n"
+                f"    Space Saved: {format_size(data['space_saved_bytes'])}\n"
+                f"    Operations: {data['operation_count']}\n"
+            )
+
+        console.print(Panel(panel_content, title="Space Saved Report",
+                            box=box.ROUNDED))
+
+    elif report_type == "operations":
+        start = None
+        end = None
+
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+            except ValueError:
+                console.print("[red]Invalid start date format. Use YYYY-MM-DD[/red]")
+                return
+
+        if end_date:
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError:
+                console.print("[red]Invalid end date format. Use YYYY-MM-DD[/red]")
+                return
+
+        report = get_operations_report(start_date=start, end_date=end)
+
+        if not report:
+            console.print("[yellow]No operations found[/yellow]")
+            return
+
+        table = Table(title="Operations by Type", box=box.ROUNDED)
+        table.add_column("Activity Type", style="cyan")
+        table.add_column("Activity Count", justify="right")
+        table.add_column("Total Operations", justify="right")
+
+        for activity_type, data in report.items():
+            table.add_row(
+                activity_type,
+                str(data['activity_count']),
+                str(data['total_operations'])
+            )
+
+        console.print(table)
+
+    else:
+        console.print(
+            f"[red]Unknown report type: {report_type}[/red]\n"
+            f"Available types: activities, space-saved, operations"
+        )
 
 
 def main():

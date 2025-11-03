@@ -2,10 +2,10 @@
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, DateTime,
-    BigInteger, Text, Index, Boolean
+    BigInteger, Text, Index, Boolean, ForeignKey
 )
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
 from typing import Optional
 
@@ -48,6 +48,42 @@ class Document(Base):
             f"<Document(id={self.id}, name='{self.name[:50]}', "
             f"path='{self.file_path[:50]}...', md5='{self.md5_hash}')>"
         )
+
+
+class User(Base):
+    """User model for authentication."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    activities = relationship("Activity", back_populates="user")
+
+
+class Activity(Base):
+    """Activity log for tracking operations."""
+
+    __tablename__ = "activities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True,
+                     index=True)
+    activity_type = Column(String(50), nullable=False, index=True)
+    description = Column(Text, nullable=False)
+    document_path = Column(String(1000), nullable=True)
+    space_saved_bytes = Column(BigInteger, default=0)
+    operation_count = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", back_populates="activities")
+
+    __table_args__ = (
+        Index('idx_activity_type_date', 'activity_type', 'created_at'),
+    )
 
 
 engine = create_engine(

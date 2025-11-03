@@ -353,3 +353,61 @@ def calculate_space_savings(duplicates: Dict[str, List[Document]],
 
     return total_savings
 
+
+def delete_duplicate_file(file_path: str,
+                         space_saved: int,
+                         user_id: Optional[int] = None) -> None:
+    """
+    Delete a duplicate file and log the activity.
+
+    Args:
+        file_path: Path to the file to delete
+        space_saved: Space saved by deletion
+        user_id: User ID who performed the deletion
+    """
+    import os
+    from app.reports import log_activity
+
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            log_activity(
+                activity_type="delete",
+                description=f"Deleted duplicate file: {file_path}",
+                document_path=file_path,
+                space_saved_bytes=space_saved,
+                operation_count=1,
+                user_id=user_id
+            )
+    except Exception as e:
+        raise Exception(f"Error deleting {file_path}: {e}")
+
+
+def move_document(source_path: str,
+                  target_path: str,
+                  user_id: Optional[int] = None) -> None:
+    """
+    Move a document and log the activity.
+
+    Args:
+        source_path: Source file path
+        target_path: Target file path
+        user_id: User ID who performed the move
+    """
+    import shutil
+    from app.reports import log_activity
+
+    try:
+        shutil.move(source_path, target_path)
+        log_activity(
+            activity_type="move",
+            description=f"Moved document from {source_path} to {target_path}",
+            document_path=target_path,
+            space_saved_bytes=0,
+            operation_count=1,
+            user_id=user_id
+        )
+    except Exception as e:
+        raise Exception(f"Error moving {source_path}: {e}")
+
+

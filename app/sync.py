@@ -119,6 +119,16 @@ def sync_drives(drive1: str, drive2: str,
                 copied_to_drive1.append(target_path)
                 # Update database
                 _index_copied_file(target_path, doc)
+                # Log activity
+                from app.reports import log_activity
+                log_activity(
+                    activity_type="sync",
+                    description=f"Synced file to {drive1}:\\{target_path}",
+                    document_path=target_path,
+                    space_saved_bytes=0,
+                    operation_count=1,
+                    user_id=None
+                )
             else:
                 errors.append(
                     f"MD5 mismatch for {target_path}"
@@ -141,6 +151,16 @@ def sync_drives(drive1: str, drive2: str,
                 copied_to_drive2.append(target_path)
                 # Update database
                 _index_copied_file(target_path, doc)
+                # Log activity
+                from app.reports import log_activity
+                log_activity(
+                    activity_type="sync",
+                    description=f"Synced file to {drive2}:\\{target_path}",
+                    document_path=target_path,
+                    space_saved_bytes=0,
+                    operation_count=1,
+                    user_id=None
+                )
             else:
                 errors.append(
                     f"MD5 mismatch for {target_path}"
