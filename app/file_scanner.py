@@ -166,10 +166,15 @@ def index_document(file_path: str,
             )
 
             # Extract author if available from PDF metadata
+            # Wrap in try/except to handle corrupted PDFs gracefully
             if metadata["file_type"] == ".pdf":
-                author = extract_pdf_author(file_path)
-                if author:
-                    document.author = author
+                try:
+                    author = extract_pdf_author(file_path)
+                    if author:
+                        document.author = author
+                except Exception:
+                    # Silently skip if author extraction fails
+                    pass
 
             db.add(document)
             db.commit()
