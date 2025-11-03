@@ -18,6 +18,10 @@ from app.search import (
 )
 from app.sync import analyze_drive_sync, sync_drives
 from app.file_scanner import find_duplicates, calculate_space_savings
+from app.corrupted_pdf import (
+    find_corrupted_pdfs, get_corrupted_pdf_report,
+    remove_corrupted_pdf
+)
 
 app = typer.Typer(help="DocuSync - Document synchronization and search")
 console = Console()
@@ -516,6 +520,109 @@ def reports(
             f"[red]Unknown report type: {report_type}[/red]\n"
             f"Available types: activities, space-saved, operations"
         )
+
+
+@app.command()
+def corrupted_pdfs(
+    drive: Optional[str] = typer.Option(
+        None, "--drive", "-d", help="Filter by drive letter"
+    ),
+    remove: bool = typer.Option(
+        False, "--remove", "-r",
+        help="Remove corrupted PDF files"
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--no-dry-run",
+        help="Show what would be done without actually removing"
+    )
+):
+    """Find and manage corrupted PDF files."""
+    console.print("\n[bold cyan]Scanning for corrupted PDFs...[/bold cyan]\n")
+
+    report = get_corrupted_pdf_report(drive=drive)
+
+    if report["total_corrupted"] == 0:
+        console.print("[green]No corrupted PDFs found![/green]")
+        return
+
+    # Display report
+    panel_content = f"""
+[yellow]Total Corrupted PDFs:[/yellow] {report['total_corrupted']}
+[yellow]Total Size:[/yellow] {format_size(report['total_size_bytes'])}
+
+[magenta]By Drive:[/magenta]
+"""
+    for drive_letter, count in report['by_drive'].items():
+        panel_content += f"  {drive_letter}:\\ - {count} corrupted PDFs\n"
+
+    console.print(Panel(panel_content, title="Corrupted PDF Report",
+                        box=box.ROUNDED))
+
+    # Show list of corrupted files
+    if report["files"]:
+        table = Table(title="Corrupted PDF Files",
+                      box=box.ROUNDED)
+        table.add_column("Name", style="cyan")
+        table.add_column("Path", style="dim")
+        table.add_column("Size", justify="right")
+        table.add_column("Drive", justify="center")
+
+        for file_info in report["files"][:20]:  # Show first 20
+            table.add_row(
+                file_info["name"][:50],
+                file_info["file_path"][:60] + "..."
+                if len(file_info["file_path"]) > 60
+                else file_info["file_path"],
+                format_size(file_info["size"]),
+                file_info["drive"]
+            )
+
+        console.print(table)
+
+        if len(report["files"]) > 20:
+            console.print(
+                f"\n[dim]... and {len(report['files']) - 20} more "
+                f"corrupted PDFs[/dim]"
+            )
+
+    # Ask about removal
+    if remove:
+        space_saved = report["total_size_bytes"]
+        console.print(
+            f"\n[yellow]You would save: "
+            f"{format_size(space_saved)}[/yellow]"
+        )
+
+        if dry_run:
+            console.print(
+                "\n[yellow]Dry run mode - no files will be removed[/yellow]"
+            )
+            console.print(
+                "Use --no-dry-run to actually remove corrupted PDFs"
+            )
+        else:
+            if Confirm.ask("\nProceed with removing corrupted PDFs?"):
+                removed_count = 0
+                failed_count = 0
+
+                for file_info in report["files"]:
+                    if remove_corrupted_pdf(
+                        file_info["file_path"], user_id=None
+                    ):
+                        removed_count += 1
+                    else:
+                        failed_count += 1
+
+                console.print(
+                    f"\n[green]Removed {removed_count} corrupted PDF files[/green]"
+                )
+                if failed_count > 0:
+                    console.print(
+                        f"[yellow]Failed to remove {failed_count} files[/yellow]"
+                    )
+                console.print(
+                    f"[green]Space saved: {format_size(space_saved)}[/green]"
+                )
 
 
 def main():

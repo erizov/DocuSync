@@ -19,6 +19,9 @@ from app.reports import (
     get_activities, get_space_saved_report, get_operations_report,
     log_activity
 )
+from app.corrupted_pdf import (
+    get_corrupted_pdf_report, find_corrupted_pdfs, remove_corrupted_pdf
+)
 from app.config import settings
 
 app = FastAPI(title="DocuSync API", version="0.1.0")
@@ -361,3 +364,70 @@ async def get_operations_report(
     start = datetime.fromisoformat(start_date) if start_date else None
     end = datetime.fromisoformat(end_date) if end_date else None
     return get_operations_report(start_date=start, end_date=end)
+
+
+@app.get("/api/reports/corrupted-pdfs")
+async def get_corrupted_pdfs_report(
+    drive: Optional[str] = Query(None, description="Filter by drive"),
+    current_user: User = Depends(get_current_user)
+):
+    """Get corrupted PDF files report."""
+    return get_corrupted_pdf_report(drive=drive)
+
+
+@app.delete("/api/corrupted-pdfs/{file_id}")
+async def delete_corrupted_pdf(
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Remove a corrupted PDF file."""
+    document = db.query(Document).filter(Document.id == file_id).first()
+    if not document:
+        raise HTTPException(
+            status_code=404, detail="Document not found"
+        )
+
+    if document.file_type != ".pdf":
+        raise HTTPException(
+            status_code=400, detail="Document is not a PDF"
+        )
+
+    success = remove_corrupted_pdf(
+        document.file_path, user_id=current_user.id
+    )
+
+    if success:
+        return {"message": "Corrupted PDF removed successfully"}
+    else:
+        raise HTTPException(
+            status_code=500, detail="Failed to remove corrupted PDF"
+        )
+
+
+@app.post("/api/corrupted-pdfs/remove-all")
+async def remove_all_corrupted_pdfs(
+    drive: Optional[str] = Query(None, description="Filter by drive"),
+    current_user: User = Depends(get_current_user)
+):
+    """Remove all corrupted PDF files."""
+    corrupted = find_corrupted_pdfs(drive=drive)
+
+    removed_count = 0
+    failed_count = 0
+    total_space_saved = 0
+
+    for doc in corrupted:
+        if os.path.exists(doc.file_path):
+            file_size = os.path.getsize(doc.file_path)
+            if remove_corrupted_pdf(doc.file_path, user_id=current_user.id):
+                removed_count += 1
+                total_space_saved += file_size
+            else:
+                failed_count += 1
+
+    return {
+        "removed_count": removed_count,
+        "failed_count": failed_count,
+        "total_space_saved_bytes": total_space_saved
+    }
