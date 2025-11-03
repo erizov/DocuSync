@@ -206,13 +206,32 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
         text_content = []
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    text_content.append(text)
-        return "\n".join(text_content)
+                try:
+                    text = page.extract_text()
+                    if text:
+                        text_content.append(text)
+                except Exception:
+                    # Skip corrupted pages, continue with next page
+                    continue
+        return "\n".join(text_content) if text_content else None
     except Exception as e:
-        print(f"Error extracting PDF text from {file_path}: {e}")
-        return None
+        # Try PyPDF2 as fallback for corrupted PDFs
+        try:
+            import PyPDF2
+            text_content = []
+            with open(file_path, "rb") as f:
+                pdf_reader = PyPDF2.PdfReader(f, strict=False)
+                for page in pdf_reader.pages:
+                    try:
+                        text = page.extract_text()
+                        if text:
+                            text_content.append(text)
+                    except Exception:
+                        continue
+            return "\n".join(text_content) if text_content else None
+        except Exception:
+            # Silently skip if both methods fail
+            return None
 
 
 def extract_pdf_author(file_path: str) -> Optional[str]:
@@ -220,12 +239,12 @@ def extract_pdf_author(file_path: str) -> Optional[str]:
     try:
         import PyPDF2
         with open(file_path, "rb") as f:
-            pdf_reader = PyPDF2.PdfReader(f)
+            pdf_reader = PyPDF2.PdfReader(f, strict=False)
             if pdf_reader.metadata and pdf_reader.metadata.author:
                 return pdf_reader.metadata.author
         return None
     except Exception as e:
-        print(f"Error extracting PDF author from {file_path}: {e}")
+        # Silently skip corrupted PDFs - don't print error to avoid spam
         return None
 
 
