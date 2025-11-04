@@ -2,7 +2,7 @@
 
 import os
 from fastapi import FastAPI, Depends, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -100,21 +100,28 @@ class ActivityResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
-    return {
-        "message": "DocuSync API",
-        "version": "0.1.0",
-        "endpoints": {
-            "/login": "Login page",
-            "/docs": "API documentation",
-            "/api/auth/login": "Login endpoint",
-            "/api/search": "Search documents",
-            "/api/documents": "List documents",
-            "/api/stats": "Get statistics",
-            "/api/duplicates": "Find duplicates",
-            "/api/reports": "Get reports"
-        }
-    }
+    """Root endpoint - redirects to login page."""
+    return RedirectResponse(url="/login")
+
+
+@app.get("/index.html", response_class=HTMLResponse)
+async def index_page():
+    """Index page that redirects to login."""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DocuSync</title>
+        <meta http-equiv="refresh" content="0; url=/login">
+        <script>
+            window.location.href = '/login';
+        </script>
+    </head>
+    <body>
+        <p>Redirecting to <a href="/login">login page</a>...</p>
+    </body>
+    </html>
+    """
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -229,7 +236,7 @@ async def login_page():
                         localStorage.setItem('access_token', data.access_token);
                         messageDiv.innerHTML += '<div class="success">Token saved. Redirecting...</div>';
                         setTimeout(() => {
-                            window.location.href = '/docs';
+                            window.location.href = '/sync';
                         }, 1000);
                     } else {
                         messageDiv.innerHTML = '<div class="error">Login failed: ' + 
