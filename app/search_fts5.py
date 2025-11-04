@@ -87,14 +87,15 @@ def search_documents_fts5(
         return [doc_dict[did] for did in doc_ids if did in doc_dict]
         
     except Exception as e:
-        # Fallback to regular search if FTS5 fails
+        # Fallback to regular search if FTS5 fails (disable FTS5 to prevent recursion)
         from app.search import search_documents
         return search_documents(
             query,
             search_name=search_name,
             search_author=search_author,
             search_content=search_content,
-            drive=drive
+            drive=drive,
+            use_fts5=False  # Disable FTS5 to prevent infinite recursion
         )[:limit]
     finally:
         db.close()

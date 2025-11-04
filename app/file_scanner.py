@@ -45,13 +45,15 @@ def get_file_metadata(file_path: str) -> Dict:
 
 
 def scan_drive(drive_letter: str,
-               file_extensions: Optional[List[str]] = None) -> List[str]:
+               file_extensions: Optional[List[str]] = None,
+               max_files: Optional[int] = None) -> List[str]:
     """
     Scan a drive for documents.
 
     Args:
         drive_letter: Drive letter (e.g., 'C', 'D')
         file_extensions: List of file extensions to scan
+        max_files: Maximum number of files to return (None = no limit)
 
     Returns:
         List of file paths found
@@ -75,14 +77,21 @@ def scan_drive(drive_letter: str,
 
             if file_ext in file_extensions:
                 found_files.append(file_path)
+                # Stop early if max_files limit reached
+                if max_files is not None and len(found_files) >= max_files:
+                    return found_files
 
     return found_files
 
 
-def scan_all_drives(file_extensions: Optional[List[str]] = None) -> \
-        Dict[str, List[str]]:
+def scan_all_drives(file_extensions: Optional[List[str]] = None,
+                    max_files: Optional[int] = None) -> Dict[str, List[str]]:
     """
     Scan all available drives.
+
+    Args:
+        file_extensions: List of file extensions to scan
+        max_files: Maximum number of files per drive (None = no limit)
 
     Returns:
         Dictionary mapping drive letters to lists of file paths
@@ -95,7 +104,7 @@ def scan_all_drives(file_extensions: Optional[List[str]] = None) -> \
         drive_path = f"{drive_letter}:\\"
         if os.path.exists(drive_path):
             try:
-                files = scan_drive(drive_letter, file_extensions)
+                files = scan_drive(drive_letter, file_extensions, max_files)
                 if files:
                     drives_by_letter[drive_letter] = files
             except (PermissionError, OSError) as e:
@@ -366,7 +375,7 @@ def extract_epub_text(file_path: str) -> Optional[str]:
 
 def find_duplicates() -> Dict[str, List[Document]]:
     """
-    Find duplicate documents by MD5 hash.
+    Find duplicate documents by MD5 hash (same content, different names).
 
     Returns:
         Dictionary mapping MD5 hash to list of duplicate documents
@@ -389,6 +398,61 @@ def find_duplicates() -> Dict[str, List[Document]]:
         return duplicates
     finally:
         db.close()
+
+
+def find_duplicate_by_name() -> Dict[str, List[Document]]:
+    """
+    Find duplicate documents by name (same name, different content).
+
+    Returns:
+        Dictionary mapping normalized name to list of documents with same name
+    """
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        documents = db.query(Document).all()
+
+        name_groups = {}
+        for doc in documents:
+            # Normalize name (lowercase, strip whitespace)
+            normalized_name = doc.name.lower().strip()
+            if normalized_name not in name_groups:
+                name_groups[normalized_name] = []
+            name_groups[normalized_name].append(doc)
+
+        # Return only groups with same name but different MD5 (different content)
+        duplicates = {}
+        for name, docs in name_groups.items():
+            if len(docs) > 1:
+                # Check if they have different MD5 hashes
+                md5_set = set(doc.md5_hash for doc in docs)
+                if len(md5_set) > 1:
+                    # Same name, different content
+                    duplicates[name] = docs
+
+        return duplicates
+    finally:
+        db.close()
+
+
+def find_all_duplicates() -> Dict:
+    """
+    Find all types of duplicates:
+    1. Same name, different content (different MD5)
+    2. Different name, same content (same MD5)
+
+    Returns:
+        Dictionary with two types of duplicates
+    """
+    same_content_diff_name = find_duplicates()  # Same MD5, different names
+    same_name_diff_content = find_duplicate_by_name()  # Same name, different MD5
+
+    return {
+        "same_content_diff_name": same_content_diff_name,
+        "same_name_diff_content": same_name_diff_content,
+        "total_same_content": sum(len(docs) - 1 for docs in same_content_diff_name.values()),
+        "total_same_name": sum(len(docs) - 1 for docs in same_name_diff_content.values()),
+    }
 
 
 def calculate_space_savings(duplicates: Dict[str, List[Document]],

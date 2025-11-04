@@ -96,15 +96,17 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def init_db() -> None:
+def init_db(db_engine=None) -> None:
     """Initialize database tables."""
-    Base.metadata.create_all(bind=engine)
-    init_fts5()
+    db_engine = db_engine or engine
+    Base.metadata.create_all(bind=db_engine)
+    init_fts5(db_engine)
 
 
-def init_fts5() -> None:
+def init_fts5(db_engine=None) -> None:
     """Initialize FTS5 virtual table for full-text search."""
-    conn = engine.connect()
+    db_engine = db_engine or engine
+    conn = db_engine.connect()
     try:
         # Create FTS5 virtual table if it doesn't exist
         # Simple FTS5 table without content option (easier to maintain)

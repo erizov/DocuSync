@@ -17,7 +17,18 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        # Fallback to direct bcrypt if passlib fails
+        try:
+            import bcrypt
+            return bcrypt.checkpw(
+                plain_password.encode('utf-8'),
+                hashed_password.encode('utf-8')
+            )
+        except Exception:
+            return False
 
 
 def get_password_hash(password: str) -> str:
@@ -95,16 +106,32 @@ def init_default_user() -> None:
             db, settings.default_username
         )
         if not existing_user:
+            # Pre-initialize bcrypt by hashing a dummy password first
+            # This helps avoid initialization issues during actual password hashing
+            try:
+                _ = get_password_hash("dummy")
+            except Exception:
+                pass  # Ignore initialization errors
+            
+            # Now hash the actual password
+            try:
+                hashed_password = get_password_hash(settings.default_password)
+            except (ValueError, Exception) as e:
+                # If bcrypt still fails, skip user creation
+                print(f"Warning: Could not hash password: {e}")
+                return
+            
             user = User(
                 username=settings.default_username,
-                hashed_password=get_password_hash(
-                    settings.default_password
-                ),
+                hashed_password=hashed_password,
                 is_active=True
             )
             db.add(user)
             db.commit()
             print(f"Created default user: {settings.default_username}")
+    except Exception as e:
+        print(f"Warning: Could not initialize default user: {e}")
+        db.rollback()
     finally:
         db.close()
 

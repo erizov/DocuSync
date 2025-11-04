@@ -19,16 +19,26 @@ DocuSync is a powerful yet simple document management system that helps you orga
 - **Fast Database Queries**: Optimized SQLite database for instant results
 
 ### 🔄 Duplicate Detection & Management
-- **Automatic Duplicate Detection**: Identifies duplicate files by MD5 hash
+- **Two Types of Duplicate Detection**:
+  1. **Same Content, Different Names**: Identifies files with identical content (same MD5 hash) but different filenames
+  2. **Same Name, Different Content**: Identifies files with the same name but different content (different MD5 hash)
+- **Interactive Selection**: For each duplicate group, choose which file to keep
 - **Space Savings Analysis**: See how much space you'll save before deleting
-- **Smart Deletion**: Choose preferred location to keep files, delete the rest
-- **Safe Operation**: Preview before deleting
+- **Smart Deletion**: Preview all duplicates and decide which to keep
+- **Safe Operation**: Preview before deleting, with confirmation prompts
 
-### 📁 Drive Synchronization
-- **Bidirectional Sync**: Synchronize files between any two drives
-- **Space Analysis**: Know exactly how much space you need on each drive
+### 📁 Drive & Folder Synchronization
+- **Bidirectional Sync**: Synchronize files between any two drives or folders
+- **Web-Based Sync Interface**: Visual two-panel interface for comparing and syncing
+- **Smart Sync Strategies**: Choose how to handle conflicts:
+  - **Keep Both**: Preserve both versions with suffixes
+  - **Keep Newest**: Automatically keep the most recently modified file
+  - **Keep Largest**: Keep the file with the larger size
+- **Space Analysis**: Know exactly how much space you need on each drive/folder
 - **Smart Copying**: Preserves directory structure and verifies file integrity
+- **Duplicate Detection**: Identifies files with same name but different content
 - **Dry-Run Mode**: Preview sync operations before executing
+- **Path Mapping**: Specify custom target folders when exact paths don't exist
 
 ### 🗄️ Database Storage
 - **SQLite Database**: Fast, local, no server required
@@ -101,13 +111,22 @@ python -m app.cli search "Python" --no-content
 
 ### 4. Find Duplicates
 
-Find and manage duplicate files:
+Find and manage duplicate files (two types):
 ```bash
 python -m app.cli duplicates
 ```
 
-### 5. Synchronize Drives
+The tool will:
+1. Show a summary of both types of duplicates:
+   - Same content, different names (e.g., `document.pdf` and `document_copy.pdf` with same content)
+   - Same name, different content (e.g., `report.pdf` with different versions)
+2. Ask which type you want to handle (or both)
+3. For each duplicate group, ask which file you want to keep
+4. Delete the others and show space saved
 
+### 5. Synchronize Drives or Folders
+
+**Command Line:**
 Sync files between two drives (dry-run):
 ```bash
 python -m app.cli sync --drive1 D --drive2 E
@@ -117,6 +136,25 @@ Actually sync (be careful!):
 ```bash
 python -m app.cli sync --drive1 D --drive2 E --no-dry-run
 ```
+
+**Web Interface:**
+1. Start the server:
+```bash
+uvicorn app.main:app --reload
+```
+
+2. Navigate to: http://localhost:8000/sync
+
+3. Enter two folders or drives (e.g., `C:\folder1` or just `C` for a drive)
+
+4. Choose a sync strategy:
+   - **Keep Both**: Preserve both versions when conflicts occur
+   - **Keep Newest**: Automatically keep the most recent file
+   - **Keep Largest**: Keep the larger file
+
+5. Click "Analyze" to preview what will be synced
+
+6. Click "Execute Sync" to perform the synchronization
 
 ### 6. View Statistics
 
@@ -133,11 +171,26 @@ uvicorn app.main:app --reload
 ```
 
 Then access:
-- API Documentation: http://localhost:8000/docs
-- Search: `GET /api/search?q=query`
-- List Documents: `GET /api/documents`
-- Statistics: `GET /api/stats`
-- Duplicates: `GET /api/duplicates`
+- **Web Interface**: http://localhost:8000/sync (folder sync interface)
+- **API Documentation**: http://localhost:8000/docs
+- **Login Page**: http://localhost:8000/login
+
+### API Endpoints
+
+- **Search**: `GET /api/search?q=query`
+- **List Documents**: `GET /api/documents`
+- **Statistics**: `GET /api/stats`
+- **Duplicates**: `GET /api/duplicates`
+- **Sync Analysis**: `POST /api/sync/analyze` (analyze sync requirements)
+- **Sync Execute**: `POST /api/sync/execute` (perform sync operation)
+
+### Authentication
+
+Default credentials:
+- Username: `admin`
+- Password: `admin`
+
+All API endpoints (except `/login`) require authentication via JWT token.
 
 ## Project Structure
 
@@ -149,10 +202,22 @@ DocSync/
 │   ├── database.py          # Database models and setup
 │   ├── file_scanner.py      # File system scanning
 │   ├── search.py            # Search functionality
-│   ├── sync.py              # Drive synchronization
+│   ├── search_fts5.py       # FTS5 full-text search
+│   ├── sync.py              # Drive & folder synchronization
 │   ├── cli.py               # Command-line interface
+│   ├── cli_reports.py       # CLI report commands
+│   ├── auth.py              # Authentication utilities
+│   ├── reports.py           # Activity reporting
+│   ├── corrupted_pdf.py     # Corrupted PDF detection
+│   ├── migrate_db.py        # Database migration script
 │   └── main.py              # FastAPI application
 ├── tests/                   # Test suite
+│   ├── test_file_scanner.py
+│   ├── test_search.py
+│   ├── test_search_fts5.py
+│   ├── test_sync_frontend.py
+│   ├── test_endpoints.py
+│   └── ...
 ├── requirements.txt         # Python dependencies
 ├── pyproject.toml          # Project configuration
 └── README.md               # This file
@@ -185,10 +250,19 @@ Run the test suite:
 pytest -v
 ```
 
+Run specific test categories:
+```bash
+pytest tests/test_sync_frontend.py -v  # Sync frontend tests
+pytest tests/test_search_fts5.py -v    # FTS5 search tests
+pytest tests/test_endpoints.py -v      # API endpoint tests
+```
+
 With coverage:
 ```bash
 pytest --cov=app --cov-report=html
 ```
+
+**Note**: Tests are configured to limit file operations to 100 files maximum and have a 30-minute timeout (whichever comes first) for performance. File operations (move/sync) are automatically reverted after tests complete.
 
 ## Configuration
 

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     default_username: str = "admin"
     default_password: str = "admin"
+    max_test_files: int = 100  # Maximum files for tests
 
     class Config:
         """Pydantic config."""

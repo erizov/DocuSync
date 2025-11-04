@@ -17,7 +17,7 @@ from app.search import (
     get_document_statistics
 )
 from app.sync import analyze_drive_sync, sync_drives
-from app.file_scanner import find_duplicates, calculate_space_savings
+from app.file_scanner import find_duplicates, find_all_duplicates, calculate_space_savings
 from app.corrupted_pdf import (
     find_corrupted_pdfs, get_corrupted_pdf_report,
     remove_corrupted_pdf
@@ -162,18 +162,55 @@ def duplicates():
     """Find and manage duplicate documents."""
     console.print("\n[bold cyan]Finding duplicates...[/bold cyan]\n")
 
-    duplicates_dict = find_duplicates()
+    # Find all types of duplicates
+    all_duplicates = find_all_duplicates()
+    same_content = all_duplicates["same_content_diff_name"]
+    same_name = all_duplicates["same_name_diff_content"]
 
-    if not duplicates_dict:
+    total_same_content = all_duplicates["total_same_content"]
+    total_same_name = all_duplicates["total_same_name"]
+
+    if not same_content and not same_name:
         console.print("[green]No duplicates found![/green]")
         return
 
-    total_duplicates = sum(len(docs) - 1 for docs in duplicates_dict.values())
-    console.print(f"[yellow]Found {total_duplicates} duplicate files "
-                  f"({len(duplicates_dict)} unique files have duplicates)[/yellow]\n")
+    # Show summary
+    console.print(f"\n[bold]Duplicate Summary:[/bold]")
+    if total_same_content > 0:
+        console.print(f"[yellow]1. Same content, different names: {total_same_content} duplicates "
+                      f"({len(same_content)} groups)[/yellow]")
+    if total_same_name > 0:
+        console.print(f"[yellow]2. Same name, different content: {total_same_name} duplicates "
+                      f"({len(same_name)} groups)[/yellow]")
 
-    # Show duplicates
-    table = Table(title="Duplicate Files", box=box.ROUNDED)
+    # Ask which type to handle
+    if total_same_content > 0 and total_same_name > 0:
+        choice = Prompt.ask(
+            "\nWhich type of duplicates do you want to handle?",
+            choices=["1", "2", "both"],
+            default="both"
+        )
+    elif total_same_content > 0:
+        choice = "1"
+    else:
+        choice = "2"
+
+    # Handle same content, different names
+    if choice in ["1", "both"] and same_content:
+        console.print("\n[bold cyan]1. Same Content, Different Names[/bold cyan]")
+        _handle_duplicates_by_content(same_content)
+
+    # Handle same name, different content
+    if choice in ["2", "both"] and same_name:
+        console.print("\n[bold cyan]2. Same Name, Different Content[/bold cyan]")
+        _handle_duplicates_by_name(same_name)
+
+
+def _handle_duplicates_by_content(duplicates_dict):
+    """Handle duplicates with same content (MD5) but different names."""
+    from rich.table import Table
+    
+    table = Table(title="Same Content, Different Names", box=box.ROUNDED)
     table.add_column("MD5", style="dim")
     table.add_column("Name", style="cyan")
     table.add_column("Path", style="dim")
@@ -185,8 +222,7 @@ def duplicates():
             table.add_row(
                 hash_val[:8] + "...",
                 doc.name[:40],
-                doc.file_path[:50] + "..." if len(doc.file_path) > 50
-                else doc.file_path,
+                doc.file_path[:50] + "..." if len(doc.file_path) > 50 else doc.file_path,
                 format_size(doc.size),
                 doc.drive
             )
@@ -194,74 +230,119 @@ def duplicates():
     console.print(table)
 
     if len(duplicates_dict) > 20:
-        console.print(f"\n[dim]... and {len(duplicates_dict) - 20} more "
-                      f"groups[/dim]")
+        console.print(f"\n[dim]... and {len(duplicates_dict) - 20} more groups[/dim]")
 
-    # Ask user about deletion
-    if Confirm.ask("\nDo you want to delete duplicates?"):
-        preferred_location = Prompt.ask(
-            "Enter preferred directory or drive to keep files in",
-            default="C:\\"
-        )
+    if Confirm.ask("\nDo you want to delete duplicates (same content, different names)?"):
+        _delete_duplicates_interactive(duplicates_dict, "same content")
 
-        # Calculate space savings
-        space_saved = calculate_space_savings(
-            duplicates_dict, preferred_location
-        )
 
-        console.print(f"\n[yellow]You would save: "
-                      f"{format_size(space_saved)}[/yellow]")
+def _handle_duplicates_by_name(duplicates_dict):
+    """Handle duplicates with same name but different content."""
+    from rich.table import Table
+    
+    table = Table(title="Same Name, Different Content", box=box.ROUNDED)
+    table.add_column("Name", style="cyan")
+    table.add_column("MD5", style="dim")
+    table.add_column("Path", style="dim")
+    table.add_column("Size", justify="right")
+    table.add_column("Date Created", justify="center")
 
-        if Confirm.ask("Proceed with deletion?"):
-            db = SessionLocal()
-            deleted_count = 0
+    for name, docs in list(duplicates_dict.items())[:20]:
+        for doc in docs:
+            date_str = doc.date_created.strftime("%Y-%m-%d") if doc.date_created else "N/A"
+            table.add_row(
+                doc.name[:40],
+                doc.md5_hash[:8] + "...",
+                doc.file_path[:50] + "..." if len(doc.file_path) > 50 else doc.file_path,
+                format_size(doc.size),
+                date_str
+            )
+
+    console.print(table)
+
+    if len(duplicates_dict) > 20:
+        console.print(f"\n[dim]... and {len(duplicates_dict) - 20} more groups[/dim]")
+
+    if Confirm.ask("\nDo you want to delete duplicates (same name, different content)?"):
+        _delete_duplicates_interactive(duplicates_dict, "same name")
+
+
+def _delete_duplicates_interactive(duplicates_dict, duplicate_type):
+    """Interactive deletion with file selection."""
+    from app.database import SessionLocal
+    import os
+    
+    db = SessionLocal()
+    deleted_count = 0
+    total_space_saved = 0
+    
+    try:
+        for key, docs in duplicates_dict.items():
+            if len(docs) <= 1:
+                continue
+            
+            console.print(f"\n[bold]Processing group:[/bold]")
+            for i, doc in enumerate(docs, 1):
+                date_str = doc.date_created.strftime("%Y-%m-%d") if doc.date_created else "N/A"
+                console.print(
+                    f"  {i}. [cyan]{doc.name}[/cyan] | "
+                    f"{format_size(doc.size)} | {date_str} | "
+                    f"[dim]{doc.file_path}[/dim]"
+                )
+            
+            # Ask which file to keep
+            keep_choice = Prompt.ask(
+                f"Which file do you want to keep? (1-{len(docs)})",
+                default="1"
+            )
+            
             try:
-                for hash_val, docs in duplicates_dict.items():
-                    # Find document to keep
-                    keep_doc = None
-                    for doc in docs:
-                        if preferred_location.lower() in doc.directory.lower():
-                            keep_doc = doc
-                            break
-
-                    if not keep_doc:
-                        keep_doc = docs[0]
-
-                    # Delete others
-                    deleted_files = []
-                    for doc in docs:
-                        if doc.id != keep_doc.id:
-                            try:
-                                import os
-                                if os.path.exists(doc.file_path):
-                                    os.remove(doc.file_path)
-                                    deleted_files.append((doc.file_path, doc.size))
-                                db.delete(doc)
-                                deleted_count += 1
-                            except Exception as e:
-                                console.print(
-                                    f"[red]Error deleting {doc.file_path}: {e}[/red]"
-                                )
-
-                    # Log deletion activity
-                    if deleted_files:
-                        from app.reports import log_activity
-                        total_space = sum(size for _, size in deleted_files)
-                        log_activity(
-                            activity_type="delete",
-                            description=f"Deleted {len(deleted_files)} duplicate files",
-                            document_path=deleted_files[0][0] if deleted_files else None,
-                            space_saved_bytes=total_space,
-                            operation_count=len(deleted_files),
-                            user_id=None
-                        )
-
-                db.commit()
-
-                console.print(f"\n[green]Deleted {deleted_count} duplicate files[/green]")
-                console.print(f"[green]Space saved: {format_size(space_saved)}[/green]")
-            finally:
-                db.close()
+                keep_index = int(keep_choice) - 1
+                if keep_index < 0 or keep_index >= len(docs):
+                    console.print(f"[red]Invalid choice, skipping this group[/red]")
+                    continue
+                
+                keep_doc = docs[keep_index]
+                console.print(f"[green]Keeping: {keep_doc.name}[/green]")
+                
+                # Delete others
+                deleted_files = []
+                for doc in docs:
+                    if doc.id != keep_doc.id:
+                        try:
+                            if os.path.exists(doc.file_path):
+                                os.remove(doc.file_path)
+                                deleted_files.append((doc.file_path, doc.size))
+                                total_space_saved += doc.size
+                            db.delete(doc)
+                            deleted_count += 1
+                            console.print(f"  [yellow]Deleted: {doc.name}[/yellow]")
+                        except Exception as e:
+                            console.print(
+                                f"[red]Error deleting {doc.file_path}: {e}[/red]"
+                            )
+                
+                # Log deletion activity
+                if deleted_files:
+                    from app.reports import log_activity
+                    log_activity(
+                        activity_type="delete",
+                        description=f"Deleted {len(deleted_files)} duplicate files ({duplicate_type})",
+                        document_path=deleted_files[0][0] if deleted_files else None,
+                        space_saved_bytes=sum(size for _, size in deleted_files),
+                        operation_count=len(deleted_files),
+                        user_id=None
+                    )
+            
+            except ValueError:
+                console.print(f"[red]Invalid choice, skipping this group[/red]")
+                continue
+        
+        db.commit()
+        console.print(f"\n[green]Deleted {deleted_count} duplicate files, "
+                      f"saved {format_size(total_space_saved)}[/green]")
+    finally:
+        db.close()
 
 
 @app.command()
