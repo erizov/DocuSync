@@ -2,7 +2,7 @@
 
 import os
 from fastapi import FastAPI, Depends, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -122,6 +122,24 @@ async def index_page():
     </body>
     </html>
     """
+
+
+@app.get("/favicon.ico")
+async def favicon() -> Response:
+    """Serve a small inline SVG favicon to avoid 404s.
+
+    Using inline SVG avoids adding a static file and works across browsers.
+    """
+    svg = (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'>"
+        "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+        "<stop offset='0%' stop-color='#667eea'/><stop offset='100%' stop-color='#764ba2'/></linearGradient></defs>"
+        "<rect x='4' y='4' width='56' height='56' rx='12' fill='url(#g)'/>"
+        "<text x='32' y='40' font-family='Segoe UI, Arial' font-size='24' text-anchor='middle' fill='white'>D</text>"
+        "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.get("/login", response_class=HTMLResponse)
