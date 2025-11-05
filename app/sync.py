@@ -1,6 +1,7 @@
 """Drive and folder synchronization functionality."""
 
 import os
+import math
 import shutil
 from typing import Dict, List, Optional, Tuple
 import time
@@ -364,18 +365,28 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
         needs_sync_count: int = 0
         last_emit_time: float = time.time() - 1.0  # Start 1 second ago so first emit happens immediately
 
-        def emit_progress(phase: str, extra: Optional[Dict] = None) -> None:
+        def emit_progress(phase: str, extra: Optional[Dict] = None, force: bool = False) -> None:
             nonlocal last_emit_time
             if not progress_callback:
                 return
             now = time.time()
-            # Emit at least every 1 second (more frequent updates)
-            if now - last_emit_time >= 1.0:
+            # Emit at least every 1 second, or immediately if forced
+            # Force is used when we increment equals_count or needs_sync_count
+            if force or now - last_emit_time >= 1.0:
+                # Enforce invariant for reported numbers:
+                # scanned == equals + needs_sync, and if equals == 0 then needs_sync == scanned
+                displayed_equals = max(0, int(equals_count))
+                base_scanned = max(0, int(scanned_indexed))
+                # Derive needs from scanned - equals, but never below the counted needs
+                derived_needs = max(0, base_scanned - displayed_equals)
+                displayed_needs = max(int(needs_sync_count), derived_needs)
+                displayed_scanned = displayed_equals + displayed_needs
+
                 payload: Dict = {
                     "phase": phase,
-                    "scanned": scanned_indexed,
-                    "equals": equals_count,
-                    "needs_sync": needs_sync_count,
+                    "scanned": displayed_scanned,
+                    "equals": displayed_equals,
+                    "needs_sync": displayed_needs,
                 }
                 if extra:
                     payload.update(extra)
@@ -400,12 +411,15 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
             files1 = scan_folder(folder1)
             print(f"[DEBUG] Found {len(files1)} files in folder1")
             for idx, file_path in enumerate(files1):
-                index_document(file_path, extract_text=False)
+                doc = index_document(file_path, extract_text=False)
                 scanned_indexed += 1
                 # Show progress every 10 files (more frequent)
                 if idx % 10 == 0 or idx == len(files1) - 1:
+                    file_info = f"Indexing {os.path.basename(file_path)}..."
+                    if doc and doc.md5_hash:
+                        file_info += f" MD5: {doc.md5_hash[:16]}..."
                     emit_progress("scan_folder1", {
-                        "file": f"Indexing {os.path.basename(file_path)}...",
+                        "file": file_info,
                         "progress": idx + 1,
                         "total": len(files1),
                         "percentage": int(((idx + 1) / len(files1)) * 100) if len(files1) > 0 else 0
@@ -430,12 +444,15 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
             files2 = scan_folder(folder2)
             print(f"[DEBUG] Found {len(files2)} files in folder2")
             for idx, file_path in enumerate(files2):
-                index_document(file_path, extract_text=False)
+                doc = index_document(file_path, extract_text=False)
                 scanned_indexed += 1
                 # Show progress every 10 files (more frequent)
                 if idx % 10 == 0 or idx == len(files2) - 1:
+                    file_info = f"Indexing {os.path.basename(file_path)}..."
+                    if doc and doc.md5_hash:
+                        file_info += f" MD5: {doc.md5_hash[:16]}..."
                     emit_progress("scan_folder2", {
-                        "file": f"Indexing {os.path.basename(file_path)}...",
+                        "file": file_info,
                         "progress": idx + 1,
                         "total": len(files2),
                         "percentage": int(((idx + 1) / len(files2)) * 100) if len(files2) > 0 else 0
@@ -458,120 +475,340 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
             Document.file_path.like(f"{folder2}%")
         ).all()
         
-        # Group by relative path and MD5
-        folder1_dict = {}  # {relative_path: [docs]}
+        # Group by filename (with extension) and MD5
+        # Matching rule: files match if filename is the same and MD5 is the same
+        folder1_dict = {}  # {filename: [docs]}
         folder2_dict = {}
         
         # Track progress for folder1
         total_files_folder1 = len(docs_folder1)
         for idx, doc in enumerate(docs_folder1):
             try:
-                rel_path = os.path.relpath(doc.file_path, folder1)
-                if rel_path not in folder1_dict:
-                    folder1_dict[rel_path] = []
-                folder1_dict[rel_path].append(doc)
+                name_key = os.path.basename(doc.file_path)
+                # Debug for target file
+                if "Indexing R for Data Science" in name_key or "R for Data Science" in name_key:
+                    print(f"[DEBUG TARGET] folder1 grouping: file_path='{doc.file_path}' basename='{name_key}'")
+                if name_key not in folder1_dict:
+                    folder1_dict[name_key] = []
+                folder1_dict[name_key].append(doc)
             except ValueError:
-                continue  # Skip if not relative
+                continue
         
         # Track progress for folder2
         total_files_folder2 = len(docs_folder2)
         for idx, doc in enumerate(docs_folder2):
             try:
-                rel_path = os.path.relpath(doc.file_path, folder2)
-                if rel_path not in folder2_dict:
-                    folder2_dict[rel_path] = []
-                folder2_dict[rel_path].append(doc)
+                name_key = os.path.basename(doc.file_path)
+                # Debug for target file
+                if "Indexing R for Data Science" in name_key or "R for Data Science" in name_key:
+                    print(f"[DEBUG TARGET] folder2 grouping: file_path='{doc.file_path}' basename='{name_key}'")
+                if name_key not in folder2_dict:
+                    folder2_dict[name_key] = []
+                folder2_dict[name_key].append(doc)
             except ValueError:
-                continue  # Skip if not relative
+                continue
         
         # Find files unique to each folder and duplicates with different content
         missing_in_folder2 = []  # Files in folder1 but not folder2
         missing_in_folder1 = []  # Files in folder2 but not folder1
-        duplicates = []  # Same relative path but different MD5
+        duplicates = []  # Same name, different MD5 (partial matches needing decision)
+        suspected_duplicates = []  # Different name, same MD5 (possible rename)
+
+        # Counters per new semantics
+        equals_by_name_count = 0       # total pairs matched by name (equals)
+        exact_match_count = 0          # subset of equals where md5 also matches
+        partial_match_count = 0        # subset of equals where md5 differs
+        uniques_count = 0              # files only on one side
         
-        # Compare files and track progress
+        # Compare by filename and track progress
         compared_count = 0
-        folder1_items = list(folder1_dict.items())
-        total_to_compare = len(folder1_items) + len(folder2_dict)
-        
-        for rel_path, docs1_list in folder1_items:
+        # Deterministic order: sort by basename
+        names_all = sorted(set(folder1_dict.keys()) | set(folder2_dict.keys()))
+        total_to_compare = len(names_all)
+
+        # Build quick MD5 presence sets per folder for cross-name checks
+        md5_set_f1 = set()
+        for docs in folder1_dict.values():
+            for d in docs:
+                md5_set_f1.add(d.md5_hash)
+        md5_set_f2 = set()
+        for docs in folder2_dict.values():
+            for d in docs:
+                md5_set_f2.add(d.md5_hash)
+
+        # Determine debug throttling to <= 50 messages based on bigger folder size
+        bigger_folder_files = max(total_files_folder1, total_files_folder2)
+        compare_log_step = max(1, int(math.ceil(bigger_folder_files / 50)))
+        try:
+            print(
+                f"[DEBUG] ordered {len(folder1_dict)} files in folder1, ordered {len(folder2_dict)} files in folder2; "
+                f"bigger_folder_files={bigger_folder_files}, log_step={compare_log_step}"
+            )
+        except Exception:
+            pass
+
+        # Track how many pairs we matched by name for each md5 so we can
+        # later also match by md5 across different names without double-counting
+        matched_by_name_per_md5 = {}
+
+        for name_key in names_all:
+            docs1_list = folder1_dict.get(name_key, [])
+            docs2_list = folder2_dict.get(name_key, [])
             compared_count += 1
-            if rel_path not in folder2_dict:
-                # File exists only in folder1
-                missing_in_folder2.extend(docs1_list)
-                needs_sync_count += len(docs1_list)
-                # Emit immediately after incrementing needs_sync
-                if compared_count % 3 == 0 or compared_count == len(folder1_items):
-                    emit_progress("compare", {})
-            else:
-                # File exists in both, check if same MD5
-                docs2_list = folder2_dict[rel_path]
-                hash1 = set(doc.md5_hash for doc in docs1_list)
-                hash2 = set(doc.md5_hash for doc in docs2_list)
-                
-                # Check if any MD5 hashes match (files are identical)
-                intersection = hash1 & hash2
-                if intersection:  # Intersection - at least one MD5 matches
-                    # Files with same MD5 exist in both folders - skip them (don't sync)
-                    # They are already in sync
-                    # Count matching files: count unique MD5 hashes that match
-                    # For each matching MD5, count files in both folders
-                    for matching_hash in intersection:
-                        matching_docs1 = [d for d in docs1_list if d.md5_hash == matching_hash]
-                        matching_docs2 = [d for d in docs2_list if d.md5_hash == matching_hash]
-                        # Count the minimum (pairs that match)
-                        equals_count += min(len(matching_docs1), len(matching_docs2))
-                    # Emit immediately after incrementing equals
-                    if compared_count % 3 == 0 or compared_count == len(folder1_items):
-                        emit_progress("compare", {})
-                else:
-                    # Different content (different MD5) - same name but different content
-                    # Add to duplicates for resolution
-                    duplicates.append({
-                        "relative_path": rel_path,
-                        "folder1_docs": docs1_list,
-                        "folder2_docs": docs2_list
-                    })
-                    # Needs sync: all files for this rel_path (take the larger side)
-                    needs_sync_count += max(len(docs1_list), len(docs2_list))
-                    # Emit immediately after incrementing needs_sync
-                    if compared_count % 3 == 0 or compared_count == len(folder1_items):
-                        emit_progress("compare", {})
-            
-            # Emit progress after each comparison to update needs_sync in real-time
-            if compared_count % 5 == 0 or compared_count == len(folder1_items):
+
+            # Special debug for the specific file mentioned by user
+            is_target_file = "Indexing R for Data Science" in name_key or "R for Data Science" in name_key
+            if is_target_file:
+                print(f"[DEBUG TARGET] Processing file: '{name_key}'")
+                print(f"[DEBUG TARGET] folder1_dict has {len(docs1_list)} files with this name")
+                print(f"[DEBUG TARGET] folder2_dict has {len(docs2_list)} files with this name")
                 if docs1_list:
-                    file_name = os.path.basename(docs1_list[0].file_path) if docs1_list else rel_path
-                    emit_progress("compare", {
-                        "file": file_name,
-                        "progress": compared_count,
-                        "total": total_to_compare,
-                        "percentage": int((compared_count / total_to_compare) * 100) if total_to_compare > 0 else 0
-                    })
-        
-        for rel_path, docs2_list in folder2_dict.items():
-            compared_count += 1
-            if rel_path not in folder1_dict:
-                # File exists only in folder2
-                missing_in_folder1.extend(docs2_list)
-                needs_sync_count += len(docs2_list)
-                # Emit immediately after incrementing needs_sync
-                if compared_count % 3 == 0 or compared_count == total_to_compare:
-                    emit_progress("compare", {})
-            
-            # Emit progress after each comparison to update needs_sync in real-time
-            if compared_count % 5 == 0 or compared_count == total_to_compare:
+                    print(f"[DEBUG TARGET] folder1 files:")
+                    for d in docs1_list:
+                        print(f"  - {d.file_path} MD5: {d.md5_hash[:16]}...")
                 if docs2_list:
-                    file_name = os.path.basename(docs2_list[0].file_path) if docs2_list else rel_path
-                    emit_progress("compare", {
-                        "file": file_name,
-                        "progress": compared_count,
-                        "total": total_to_compare,
-                        "percentage": int((compared_count / total_to_compare) * 100) if total_to_compare > 0 else 0
+                    print(f"[DEBUG TARGET] folder2 files:")
+                    for d in docs2_list:
+                        print(f"  - {d.file_path} MD5: {d.md5_hash[:16]}...")
+
+            if not docs2_list:
+                # Files with this name only in folder1
+                if is_target_file:
+                    print(f"[DEBUG TARGET] File '{name_key}' NOT found in folder2 by name")
+                    any_md5_matches = any(d.md5_hash in md5_set_f2 for d in docs1_list)
+                    print(f"[DEBUG TARGET] MD5 matches in folder2: {any_md5_matches}")
+                    if docs1_list:
+                        for d in docs1_list:
+                            print(f"[DEBUG TARGET] Checking MD5 {d.md5_hash[:16]}... in folder2 set: {d.md5_hash in md5_set_f2}")
+                
+                missing_in_folder2.extend(docs1_list)
+                uniques_count += len(docs1_list)
+                needs_sync_count += len(docs1_list)
+                # Debug
+                if (compared_count % compare_log_step == 0) or (compared_count == total_to_compare) or is_target_file:
+                    try:
+                        any_md5_matches = any(d.md5_hash in md5_set_f2 for d in docs1_list)
+                        if any_md5_matches:
+                            # Case 3
+                            print(
+                                f"[DEBUG] file {name_key} does NOT have an EXACT match in folder2 by name "
+                                f"BUT MATCHED by MD5 so it PROBABLY DOES NOT need sync, it needs MERGE."
+                            )
+                        else:
+                            # Case 1
+                            print(
+                                f"[DEBUG] file {name_key} does not have a match in folder2 by name and by md5 "
+                                f"so it needs sync."
+                            )
+                    except Exception:
+                        pass
+                # Build file info with MD5 for progress display
+                file_info = f"{name_key}"
+                if docs1_list:
+                    md5_list = [d.md5_hash[:16] + "..." for d in docs1_list[:3]]  # Show first 3 MD5s
+                    file_info += f" | folder1 MD5: {', '.join(md5_list)}"
+                emit_progress("compare", {
+                    "file": file_info,
+                    "scanned": equals_by_name_count + uniques_count,
+                    "equals": equals_by_name_count,
+                    "needs_sync": uniques_count,
+                }, force=True)
+            elif not docs1_list:
+                # Files with this name only in folder2
+                missing_in_folder1.extend(docs2_list)
+                uniques_count += len(docs2_list)
+                needs_sync_count += len(docs2_list)
+                # Debug
+                if (compared_count % compare_log_step == 0) or (compared_count == total_to_compare):
+                    try:
+                        print(f"[DEBUG] name-only in folder2: '{name_key}' count2={len(docs2_list)}")
+                    except Exception:
+                        pass
+                # Build file info with MD5 for progress display
+                file_info = f"{name_key}"
+                if docs2_list:
+                    md5_list = [d.md5_hash[:16] + "..." for d in docs2_list[:3]]  # Show first 3 MD5s
+                    file_info += f" | folder2 MD5: {', '.join(md5_list)}"
+                emit_progress("compare", {
+                    "file": file_info,
+                    "scanned": equals_by_name_count + uniques_count,
+                    "equals": equals_by_name_count,
+                    "needs_sync": uniques_count,
+                }, force=True)
+            else:
+                # Same filename exists on both sides
+                # Match files first by name (already grouped), then by MD5
+                
+                # Step 1: Match files by MD5 within the same name
+                # Group files by MD5 for both folders
+                f1_by_md5 = {}  # {md5: [docs]}
+                f2_by_md5 = {}  # {md5: [docs]}
+                
+                for d in docs1_list:
+                    if d.md5_hash not in f1_by_md5:
+                        f1_by_md5[d.md5_hash] = []
+                    f1_by_md5[d.md5_hash].append(d)
+                
+                for d in docs2_list:
+                    if d.md5_hash not in f2_by_md5:
+                        f2_by_md5[d.md5_hash] = []
+                    f2_by_md5[d.md5_hash].append(d)
+                
+                if is_target_file:
+                    print(f"[DEBUG TARGET] folder1 MD5 groups: {list(f1_by_md5.keys())}")
+                    print(f"[DEBUG TARGET] folder2 MD5 groups: {list(f2_by_md5.keys())}")
+                
+                # Step 2: Match pairs by MD5 (same name + same MD5)
+                exact_here = 0
+                matched_pairs = []  # Track matched pairs for debugging
+                unmatched_f1 = []  # Files from folder1 that weren't matched
+                unmatched_f2 = []  # Files from folder2 that weren't matched
+                
+                # For each MD5 that exists in both folders, match the files
+                for md5_hash in set(f1_by_md5.keys()) & set(f2_by_md5.keys()):
+                    # Match pairs: take minimum count from both sides
+                    pairs_count = min(len(f1_by_md5[md5_hash]), 
+                                      len(f2_by_md5[md5_hash]))
+                    exact_here += pairs_count
+                    matched_by_name_per_md5[md5_hash] = matched_by_name_per_md5.get(md5_hash, 0) + pairs_count
+                    
+                    # Mark matched files
+                    for i in range(pairs_count):
+                        matched_pairs.append({
+                            "folder1": f1_by_md5[md5_hash][i],
+                            "folder2": f2_by_md5[md5_hash][i],
+                            "md5": md5_hash
+                        })
+                    
+                    # Track unmatched files
+                    if len(f1_by_md5[md5_hash]) > pairs_count:
+                        unmatched_f1.extend(f1_by_md5[md5_hash][pairs_count:])
+                    if len(f2_by_md5[md5_hash]) > pairs_count:
+                        unmatched_f2.extend(f2_by_md5[md5_hash][pairs_count:])
+                
+                # Step 3: Collect unmatched files (same name, different MD5)
+                for md5_hash in f1_by_md5.keys():
+                    if md5_hash not in f2_by_md5:
+                        unmatched_f1.extend(f1_by_md5[md5_hash])
+                
+                for md5_hash in f2_by_md5.keys():
+                    if md5_hash not in f1_by_md5:
+                        unmatched_f2.extend(f2_by_md5[md5_hash])
+                
+                if is_target_file:
+                    print(f"[DEBUG TARGET] exact_here (matched pairs): {exact_here}")
+                    print(f"[DEBUG TARGET] unmatched_f1: {len(unmatched_f1)} files")
+                    print(f"[DEBUG TARGET] unmatched_f2: {len(unmatched_f2)} files")
+                
+                # Count equals: exact matches (same name AND same MD5)
+                equals_by_name_count += exact_here
+                equals_count = equals_by_name_count
+                exact_match_count += exact_here
+                
+                # Count partial matches and unmatched files as needing sync
+                partial_here = len(unmatched_f1) + len(unmatched_f2)
+                partial_match_count += partial_here
+                
+                if partial_here > 0:
+                    duplicates.append({
+                        "relative_path": name_key,
+                        "folder1_docs": unmatched_f1 if unmatched_f1 else docs1_list,
+                        "folder2_docs": unmatched_f2 if unmatched_f2 else docs2_list,
+                        "matched_pairs": matched_pairs
                     })
-        
-        # Emit final comparison results
-        emit_progress("compare", {"file": "Comparison completed"})
+                
+                # Count unmatched files as needing sync
+                uniques_count += partial_here
+                needs_sync_count += partial_here
+
+                scanned_disp = equals_by_name_count + uniques_count
+                needs_disp = uniques_count
+                if (compared_count % compare_log_step == 0) or (compared_count == total_to_compare):
+                    try:
+                        # Case 2: exact match by name and md5
+                        if exact_here > 0:
+                            print(
+                                f"[DEBUG] file {name_key} does have a match in folder2 by name and by md5 "
+                                f"so it DOES NOT need sync."
+                            )
+                        # Case 3: no exact by name, but md5 exists elsewhere on folder2
+                        elif any(d.md5_hash in md5_set_f2 for d in docs1_list):
+                            print(
+                                f"[DEBUG] file {name_key} does NOT have an EXACT match in folder2 by name "
+                                f"BUT MATCHED by MD5 so it PROBABLY DOES NOT need sync, it needs MERGE."
+                            )
+                        else:
+                            # Case 1 fallback
+                            print(
+                                f"[DEBUG] file {name_key} does not have a match in folder2 by name and by md5 "
+                                f"so it needs sync."
+                            )
+                    except Exception:
+                        pass
+                # Build file info with MD5 from both folders for progress display
+                file_info = f"{name_key}"
+                if docs1_list:
+                    md5_list_f1 = [d.md5_hash[:16] + "..." for d in docs1_list[:2]]  # Show first 2 MD5s
+                    file_info += f" | folder1 MD5: {', '.join(md5_list_f1)}"
+                if docs2_list:
+                    md5_list_f2 = [d.md5_hash[:16] + "..." for d in docs2_list[:2]]  # Show first 2 MD5s
+                    file_info += f" | folder2 MD5: {', '.join(md5_list_f2)}"
+                emit_progress("compare", {
+                    "file": file_info,
+                    "scanned": scanned_disp,
+                    "equals": equals_by_name_count,
+                    "needs_sync": needs_disp,
+                }, force=True)
+
+        # MD5-only suspected duplicates across different names
+        md5_counts_f1 = {}
+        names_by_md5_f1 = {}
+        for name_key, docs in folder1_dict.items():
+            for d in docs:
+                md5_counts_f1[d.md5_hash] = md5_counts_f1.get(d.md5_hash, 0) + 1
+                names_by_md5_f1.setdefault(d.md5_hash, set()).add(name_key)
+        md5_counts_f2 = {}
+        names_by_md5_f2 = {}
+        for name_key, docs in folder2_dict.items():
+            for d in docs:
+                md5_counts_f2[d.md5_hash] = md5_counts_f2.get(d.md5_hash, 0) + 1
+                names_by_md5_f2.setdefault(d.md5_hash, set()).add(name_key)
+
+        suspected_count = 0
+        for h in set(md5_counts_f1.keys()) & set(md5_counts_f2.keys()):
+            # Skip MD5s that were already paired by same name for all occurrences
+            total_pairs_possible = min(md5_counts_f1[h], md5_counts_f2[h])
+            already_by_name = matched_by_name_per_md5.get(h, 0)
+            remaining = max(0, total_pairs_possible - already_by_name)
+            if remaining <= 0:
+                continue
+            names1 = names_by_md5_f1.get(h, set())
+            names2 = names_by_md5_f2.get(h, set())
+            # Only suspect if names do not intersect (i.e., different basenames)
+            if names1.isdisjoint(names2):
+                suspected_duplicates.append({
+                    "md5": h,
+                    "folder1_names": sorted(list(names1)),
+                    "folder2_names": sorted(list(names2)),
+                    "count_pairs": remaining,
+                })
+                suspected_count += remaining
+
+        scanned_disp = equals_by_name_count + uniques_count + suspected_count
+        needs_disp = uniques_count + suspected_count
+        try:
+            print(
+                f"[DEBUG] suspected md5 duplicates across names: {suspected_count} "
+                f"equals={equals_by_name_count} needs={needs_disp} scanned={scanned_disp}"
+            )
+        except Exception:
+            pass
+        emit_progress("compare", {
+            "file": "Comparison completed",
+            "scanned": scanned_disp,
+            "equals": equals_by_name_count,
+            "needs_sync": needs_disp,
+        }, force=True)
         
         return {
             "folder1": folder1,
@@ -579,6 +816,10 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
             "missing_in_folder1": missing_in_folder1,
             "missing_in_folder2": missing_in_folder2,
             "duplicates": duplicates,
+            "suspected_duplicates": suspected_duplicates,
+            "equals_by_name_count": equals_by_name_count,
+            "exact_match_count": exact_match_count,
+            "partial_match_count": partial_match_count,
             "missing_count_folder1": len(missing_in_folder1),
             "missing_count_folder2": len(missing_in_folder2),
             "duplicate_count": len(duplicates),
