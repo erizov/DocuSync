@@ -1,8 +1,11 @@
 """FastAPI main application."""
 
 import os
-from fastapi import FastAPI, Depends, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, Depends, HTTPException, Query, status, BackgroundTasks
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response, StreamingResponse, JSONResponse
+import traceback
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -30,6 +33,11 @@ from app.corrupted_pdf import (
 from app.sync import (
     analyze_drive_sync, analyze_folder_sync, sync_folders
 )
+
+# In-memory progress store keyed by job_id
+PROGRESS_STORE: dict = {}
+# Thread pool executor for running blocking analysis tasks
+ANALYSIS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 from app.config import settings
 
 app = FastAPI(title="DocuSync API", version="0.1.0")
@@ -122,6 +130,14 @@ async def index_page():
     </body>
     </html>
     """
+
+
+@app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+async def chrome_devtools():
+    """Handle Chrome DevTools request to prevent 404 errors in logs."""
+    # Return empty JSON with 200 status to silence Chrome DevTools requests
+    from fastapi.responses import JSONResponse
+    return JSONResponse(content={}, status_code=200)
 
 
 @app.get("/favicon.ico")
@@ -569,6 +585,7 @@ class SyncAnalysisRequest(BaseModel):
     folder2: Optional[str] = None
     drive1: Optional[str] = None
     drive2: Optional[str] = None
+    job_id: Optional[str] = None
 
 
 class SyncRequest(BaseModel):
@@ -581,6 +598,40 @@ class SyncRequest(BaseModel):
     dry_run: bool = True
 
 
+class CopyFileRequest(BaseModel):
+    """Copy single file request model."""
+    source_path: str
+    target_path: str
+    source_doc_id: int
+
+
+@app.get("/api/sync/progress")
+async def get_sync_progress(job_id: str, current_user: User = Depends(get_current_user)):
+    print(f"[DEBUG] Progress request for job_id={job_id} (type: {type(job_id)})")
+    print(f"[DEBUG] PROGRESS_STORE keys: {list(PROGRESS_STORE.keys())}")
+    stored_data = PROGRESS_STORE.get(job_id)
+    if stored_data:
+        print(f"[DEBUG] Found data in store: scanned={stored_data.get('scanned')}, equals={stored_data.get('equals')}, needs_sync={stored_data.get('needs_sync')}")
+    else:
+        print(f"[DEBUG] No data found for job_id={job_id} in PROGRESS_STORE")
+        # Check if there's a close match (maybe string encoding issue)
+        for key in PROGRESS_STORE.keys():
+            if key == job_id:
+                print(f"[DEBUG] Exact match found: {key}")
+            elif key.startswith(job_id) or job_id.startswith(key):
+                print(f"[DEBUG] Partial match: store_key={key}, request_key={job_id}")
+    
+    data = stored_data or {
+        "scanned": 0,
+        "equals": 0,
+        "needs_sync": 0,
+        "phase": "idle",
+        "updated_at": datetime.utcnow().isoformat()
+    }
+    print(f"[DEBUG] Returning: scanned={data.get('scanned')}, equals={data.get('equals')}, needs_sync={data.get('needs_sync')}")
+    return data
+
+
 @app.post("/api/sync/analyze")
 async def analyze_sync(
     request: SyncAnalysisRequest,
@@ -588,66 +639,135 @@ async def analyze_sync(
 ):
     """Analyze what needs to be synced between two folders or drives."""
     if request.folder1 and request.folder2:
-        # Folder sync
-        analysis = analyze_folder_sync(request.folder1, request.folder2)
-        return {
-            "type": "folder",
-            "analysis": {
-                "folder1": analysis["folder1"],
-                "folder2": analysis["folder2"],
-                "missing_count_folder1": analysis["missing_count_folder1"],
-                "missing_count_folder2": analysis["missing_count_folder2"],
-                "duplicate_count": analysis["duplicate_count"],
-                "space_needed_folder1": analysis["space_needed_folder1"],
-                "space_needed_folder2": analysis["space_needed_folder2"],
-                "missing_in_folder1": [
-                    {
-                        "id": doc.id,
-                        "name": doc.name,
-                        "file_path": doc.file_path,
-                        "size": doc.size,
-                        "date_created": doc.date_created.isoformat() if doc.date_created else None,
-                    }
-                    for doc in analysis["missing_in_folder1"][:100]  # Limit for frontend
-                ],
-                "missing_in_folder2": [
-                    {
-                        "id": doc.id,
-                        "name": doc.name,
-                        "file_path": doc.file_path,
-                        "size": doc.size,
-                        "date_created": doc.date_created.isoformat() if doc.date_created else None,
-                    }
-                    for doc in analysis["missing_in_folder2"][:100]
-                ],
-                "duplicates": [
-                    {
-                        "relative_path": dup["relative_path"],
-                        "folder1_docs": [
-                            {
-                                "id": doc.id,
-                                "name": doc.name,
-                                "file_path": doc.file_path,
-                                "size": doc.size,
-                                "date_created": doc.date_created.isoformat() if doc.date_created else None,
-                            }
-                            for doc in dup["folder1_docs"]
-                        ],
-                        "folder2_docs": [
-                            {
-                                "id": doc.id,
-                                "name": doc.name,
-                                "file_path": doc.file_path,
-                                "size": doc.size,
-                                "date_created": doc.date_created.isoformat() if doc.date_created else None,
-                            }
-                            for doc in dup["folder2_docs"]
-                        ],
-                    }
-                    for dup in analysis["duplicates"][:100]  # Limit duplicates
-                ],
+        try:
+            # Folder sync
+            # Store progress updates in a list
+            progress_updates = []
+            job_id = request.job_id or f"job-{datetime.utcnow().timestamp()}"
+            print(f"[DEBUG] analyze_sync: received job_id={request.job_id}, using job_id={job_id}")
+            # Initialize PROGRESS_STORE BEFORE starting analysis
+            PROGRESS_STORE[job_id] = {
+                "scanned": 0,
+                "equals": 0,
+                "needs_sync": 0,
+                "phase": "starting",
+                "message": "Starting analysis...",
+                "updated_at": datetime.utcnow().isoformat()
             }
-        }
+            print(f"[DEBUG] PROGRESS_STORE initialized with job_id={job_id}, keys={list(PROGRESS_STORE.keys())}")
+            
+            def progress_callback(update):
+                # Append to returned list
+                progress_updates.append(update)
+                # Update shared store every callback
+                entry = PROGRESS_STORE.get(job_id, {})
+                # Always update with values from update dict if present, otherwise keep existing
+                # Ensure values are integers
+                scanned = update.get("scanned")
+                equals = update.get("equals")
+                needs_sync = update.get("needs_sync")
+                entry.update({
+                    "scanned": int(scanned) if scanned is not None else entry.get("scanned", 0),
+                    "equals": int(equals) if equals is not None else entry.get("equals", 0),
+                    "needs_sync": int(needs_sync) if needs_sync is not None else entry.get("needs_sync", 0),
+                    "phase": update.get("phase", entry.get("phase", "running")),
+                    "file": update.get("file")
+                })
+                entry["updated_at"] = datetime.utcnow().isoformat()
+                PROGRESS_STORE[job_id] = entry
+                # Debug: print to verify updates are happening
+                print(f"[DEBUG] Progress update for {job_id}: scanned={entry['scanned']} (type: {type(entry['scanned'])}), equals={entry['equals']}, needs_sync={entry['needs_sync']}")
+            
+            # Run analysis in thread pool executor to avoid blocking event loop
+            # This allows FastAPI to handle GET /api/sync/progress requests concurrently
+            loop = asyncio.get_event_loop()
+            analysis = await loop.run_in_executor(
+                ANALYSIS_EXECUTOR,
+                analyze_folder_sync,
+                request.folder1,
+                request.folder2,
+                progress_callback
+            )
+            # Mark completion
+            PROGRESS_STORE[job_id] = {
+                **PROGRESS_STORE.get(job_id, {}),
+                "phase": "completed",
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            return {
+                "type": "folder",
+                "job_id": job_id,
+                "progress_updates": progress_updates,
+                "analysis": {
+                    "folder1": analysis["folder1"],
+                    "folder2": analysis["folder2"],
+                    "missing_count_folder1": analysis["missing_count_folder1"],
+                    "missing_count_folder2": analysis["missing_count_folder2"],
+                    "duplicate_count": analysis["duplicate_count"],
+                    "space_needed_folder1": analysis["space_needed_folder1"],
+                    "space_needed_folder2": analysis["space_needed_folder2"],
+                    "missing_in_folder1": [
+                        {
+                            "id": doc.id,
+                            "name": doc.name,
+                            "file_path": doc.file_path,
+                            "size": doc.size,
+                            "md5_hash": doc.md5_hash,
+                        }
+                        for doc in analysis["missing_in_folder1"][:5000]  # Increased limit
+                    ],
+                    "missing_in_folder2": [
+                        {
+                            "id": doc.id,
+                            "name": doc.name,
+                            "file_path": doc.file_path,
+                            "size": doc.size,
+                            "md5_hash": doc.md5_hash,
+                        }
+                        for doc in analysis["missing_in_folder2"][:5000]  # Increased limit
+                    ],
+                    "duplicates": [
+                        {
+                            "relative_path": dup["relative_path"],
+                            "folder1_docs": [
+                                {
+                                    "id": doc.id,
+                                    "name": doc.name,
+                                    "file_path": doc.file_path,
+                                    "size": doc.size,
+                                    "md5_hash": doc.md5_hash,
+                                }
+                                for doc in dup["folder1_docs"]
+                            ],
+                            "folder2_docs": [
+                                {
+                                    "id": doc.id,
+                                    "name": doc.name,
+                                    "file_path": doc.file_path,
+                                    "size": doc.size,
+                                    "md5_hash": doc.md5_hash,
+                                }
+                                for doc in dup["folder2_docs"]
+                            ],
+                        }
+                        for dup in analysis["duplicates"][:5000]  # Increased limit
+                    ],
+                }
+            }
+        except Exception as e:
+            # Mark job as error and return structured JSON error
+            try:
+                jid = locals().get('job_id')
+                if jid:
+                    PROGRESS_STORE[jid] = {
+                        **PROGRESS_STORE.get(jid, {}),
+                        "phase": "error",
+                        "error": str(e),
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }
+            except Exception:
+                pass
+            return JSONResponse(status_code=500, content={"detail": str(e)})
     elif request.drive1 and request.drive2:
         # Drive sync
         analysis = analyze_drive_sync(request.drive1, request.drive2)
@@ -667,6 +787,217 @@ async def analyze_sync(
             status_code=400,
             detail="Either folder1/folder2 or drive1/drive2 must be provided"
         )
+
+
+@app.post("/api/sync/copy-file")
+async def copy_file(
+    request: CopyFileRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Copy a single file with confirmation."""
+    from app.database import SessionLocal, Document
+    from app.file_scanner import calculate_md5
+    from app.sync import _index_copied_file
+    from app.reports import log_activity
+    import shutil
+    import os
+    
+    db = SessionLocal()
+    try:
+        source_doc = db.query(Document).filter(Document.id == request.source_doc_id).first()
+        if not source_doc:
+            return {"success": False, "error": "Source document not found"}
+        
+        # Check if source file exists
+        if not os.path.exists(request.source_path):
+            return {"success": False, "error": f"Source file not found: {request.source_path}"}
+        
+        # Check if source file is readable
+        if not os.access(request.source_path, os.R_OK):
+            return {"success": False, "error": f"Source file is not readable: {request.source_path}"}
+        
+        # Get target directory
+        target_dir = os.path.dirname(request.target_path)
+        
+        # Check if target directory exists, if not create it
+        if not os.path.exists(target_dir):
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except PermissionError as e:
+                return {"success": False, "error": f"Cannot create target directory: {target_dir}. Permission denied."}
+            except Exception as e:
+                return {"success": False, "error": f"Cannot create target directory: {target_dir}. Error: {str(e)}"}
+        
+        # Check if target directory is writable
+        if not os.access(target_dir, os.W_OK):
+            return {"success": False, "error": f"Target directory is not writable: {target_dir}. Check permissions."}
+        
+        # Check if target file already exists
+        target_exists = os.path.exists(request.target_path)
+        
+        if target_exists:
+            # Check if existing file has the same MD5 hash (same content)
+            try:
+                existing_hash = calculate_md5(request.target_path)
+                if existing_hash == source_doc.md5_hash:
+                    # File already exists with same content - skip copy
+                    # Index the existing file if not already indexed
+                    try:
+                        _index_copied_file(request.target_path, source_doc)
+                    except Exception:
+                        pass  # Ignore indexing errors for existing files
+                    
+                    return {
+                        "success": True,
+                        "target_path": request.target_path,
+                        "file_name": os.path.basename(request.target_path),
+                        "skipped": True,
+                        "message": "File already exists with same content - skipped"
+                    }
+            except Exception as e:
+                # If we can't read the existing file, we'll try to overwrite it
+                pass
+            
+            # File exists but has different content or we can't verify it
+            # Check if target file is writable (if it exists, we might need to overwrite it)
+            if not os.access(request.target_path, os.W_OK):
+                return {
+                    "success": False, 
+                    "error": f"Target file exists and is locked: {request.target_path}. File may be open in another application. Please close it and try again."
+                }
+            
+            # Try to remove existing file if it exists (for overwrite)
+            try:
+                os.remove(request.target_path)
+            except PermissionError:
+                return {
+                    "success": False, 
+                    "error": f"Cannot overwrite existing file: {request.target_path}. File may be open in another application. Please close it and try again."
+                }
+            except Exception as e:
+                return {"success": False, "error": f"Cannot remove existing file: {request.target_path}. Error: {str(e)}"}
+        
+        # Copy file
+        try:
+            shutil.copy2(request.source_path, request.target_path)
+        except PermissionError as e:
+            return {
+                "success": False, 
+                "error": f"Permission denied when copying to {request.target_path}. File may be locked or directory permissions insufficient. Original error: {str(e)}"
+            }
+        except OSError as e:
+            return {
+                "success": False, 
+                "error": f"OS error when copying: {str(e)}. Target: {request.target_path}"
+            }
+        
+        # Verify MD5
+        try:
+            new_hash = calculate_md5(request.target_path)
+            if new_hash != source_doc.md5_hash:
+                return {"success": False, "error": "MD5 mismatch after copy - file may be corrupted"}
+        except Exception as e:
+            return {"success": False, "error": f"Cannot verify MD5: {str(e)}"}
+        
+        # Index the copied file
+        try:
+            _index_copied_file(request.target_path, source_doc)
+        except Exception as e:
+            # Log but don't fail the copy operation
+            print(f"Warning: Could not index copied file: {e}")
+        
+        # Log activity
+        try:
+            log_activity(
+                activity_type="sync",
+                description=f"Synced file to {os.path.dirname(request.target_path)}",
+                document_path=request.target_path,
+                space_saved_bytes=0,
+                operation_count=1,
+                user_id=None
+            )
+        except Exception as e:
+            # Log but don't fail the copy operation
+            print(f"Warning: Could not log activity: {e}")
+        
+        return {
+            "success": True,
+            "target_path": request.target_path,
+            "file_name": os.path.basename(request.target_path)
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
+    finally:
+        db.close()
+
+
+@app.post("/api/sync/check-file")
+async def check_file(
+    request: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Check if target file exists and matches by name or MD5."""
+    import os
+    from app.file_scanner import calculate_md5
+    
+    target_path = request.get("target_path")
+    source_md5 = request.get("source_md5")
+    
+    if not target_path:
+        return {"exists": False, "matches_by_name": False, "matches_by_md5": False}
+    
+    exists = os.path.exists(target_path)
+    matches_by_name = exists
+    matches_by_md5 = False
+    
+    if exists and source_md5:
+        try:
+            existing_hash = calculate_md5(target_path)
+            matches_by_md5 = (existing_hash == source_md5)
+        except Exception:
+            # If we can't read the file, assume it doesn't match
+            matches_by_md5 = False
+    
+    return {
+        "exists": exists,
+        "matches_by_name": matches_by_name,
+        "matches_by_md5": matches_by_md5
+    }
+
+
+@app.post("/api/sync/delete-file")
+async def delete_file(
+    request: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a file (used for duplicate replacement)."""
+    import os
+    
+    file_path = request.get("file_path")
+    
+    if not file_path:
+        return {"success": False, "error": "File path not provided"}
+    
+    if not os.path.exists(file_path):
+        return {"success": True, "message": "File does not exist (already deleted)"}
+    
+    try:
+        # Check if file is writable (not locked)
+        if not os.access(file_path, os.W_OK):
+            return {
+                "success": False,
+                "error": f"File is locked and cannot be deleted: {file_path}. File may be open in another application."
+            }
+        
+        os.remove(file_path)
+        return {"success": True, "message": f"File deleted: {file_path}"}
+    except PermissionError as e:
+        return {
+            "success": False,
+            "error": f"Permission denied when deleting {file_path}. File may be open in another application."
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Error deleting file: {str(e)}"}
 
 
 @app.post("/api/sync/execute")
@@ -739,6 +1070,28 @@ async def sync_page():
                 border: 1px solid #ddd;
                 border-radius: 4px;
                 font-size: 14px;
+            }
+            .folder-input-group {
+                flex: 1;
+                display: flex;
+                gap: 8px;
+                align-items: center;
+            }
+            .folder-input-group input {
+                flex: 1;
+            }
+            .browse-btn {
+                padding: 8px 16px;
+                background: #28a745;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                white-space: nowrap;
+            }
+            .browse-btn:hover {
+                background: #218838;
             }
             .controls-row button {
                 padding: 10px 20px;
@@ -833,6 +1186,271 @@ async def sync_page():
                 padding: 20px;
                 color: #666;
             }
+            .progress-container {
+                display: none;
+                margin: 20px 0;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .progress-container.show {
+                display: block;
+            }
+            .progress-bar-wrapper {
+                width: 100%;
+                height: 24px;
+                background: #e9ecef;
+                border-radius: 12px;
+                overflow: hidden;
+                position: relative;
+            }
+            .progress-bar {
+                height: 100%;
+                background: linear-gradient(90deg, #007bff, #0056b3);
+                width: 0%;
+                transition: width 0.3s ease;
+                animation: progress-animation 1.5s ease-in-out infinite;
+            }
+            .progress-bar-fill {
+                position: absolute;
+                top: 0;
+                left: 0;
+                height: 100%;
+                width: 0%;
+                background: linear-gradient(90deg, #007bff, #0056b3);
+                transition: width 0.3s ease;
+            }
+            @keyframes progress-animation {
+                0% {
+                    background-position: 0% 50%;
+                }
+                50% {
+                    background-position: 100% 50%;
+                }
+                100% {
+                    background-position: 0% 50%;
+                }
+            }
+            .progress-text {
+                margin-top: 10px;
+                text-align: center;
+                color: #666;
+                font-size: 14px;
+            }
+            .progress-file-list {
+                margin-top: 10px;
+                max-height: 150px;
+                overflow-y: auto;
+                background: #f8f9fa;
+                padding: 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #555;
+            }
+            .progress-file-item {
+                padding: 4px 0;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .progress-file-item:last-child {
+                border-bottom: none;
+            }
+            .confirm-dialog {
+                display: none;
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                z-index: 10000;
+                min-width: 400px;
+                max-width: 600px;
+            }
+            .confirm-dialog.show {
+                display: block;
+            }
+            .confirm-dialog-overlay {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 9999;
+            }
+            .confirm-dialog-overlay.show {
+                display: block;
+            }
+            .confirm-dialog h3 {
+                margin: 0 0 15px 0;
+                color: #333;
+            }
+            .confirm-dialog .file-info {
+                margin: 15px 0;
+                padding: 10px;
+                background: #f8f9fa;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            .confirm-dialog .file-info strong {
+                display: block;
+                margin-bottom: 5px;
+            }
+            .confirm-dialog-buttons {
+                display: flex;
+                gap: 10px;
+                margin-top: 20px;
+                justify-content: flex-end;
+            }
+            .confirm-dialog-buttons button {
+                padding: 10px 20px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .confirm-dialog-buttons .btn-yes {
+                background: #28a745;
+                color: white;
+            }
+            .confirm-dialog-buttons .btn-yes:hover {
+                background: #218838;
+            }
+            .confirm-dialog-buttons .btn-no {
+                background: #dc3545;
+                color: white;
+            }
+            .confirm-dialog-buttons .btn-no:hover {
+                background: #c82333;
+            }
+            .confirm-dialog-buttons .btn-all {
+                background: #007bff;
+                color: white;
+            }
+            .confirm-dialog-buttons .btn-all:hover {
+                background: #0056b3;
+            }
+            .confirm-dialog-buttons .btn-abort {
+                background: #6c757d;
+                color: white;
+            }
+            .confirm-dialog-buttons .btn-abort:hover {
+                background: #5a6268;
+            }
+            .sync-status-panel {
+                display: none;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .sync-status-panel.show {
+                display: block;
+            }
+            .sync-status-header {
+                font-size: 18px;
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 15px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .sync-status-current {
+                background: #f8f9fa;
+                padding: 15px;
+                border-radius: 4px;
+                margin: 15px 0;
+                border-left: 4px solid #007bff;
+            }
+            .sync-status-current-file {
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 5px;
+            }
+            .sync-status-current-path {
+                font-size: 12px;
+                color: #666;
+                margin: 5px 0;
+            }
+            .sync-status-progress {
+                margin: 10px 0;
+                font-size: 14px;
+                color: #666;
+            }
+            .sync-status-stats {
+                display: flex;
+                gap: 20px;
+                margin-top: 15px;
+                padding-top: 15px;
+                border-top: 1px solid #eee;
+            }
+            .sync-status-stat {
+                flex: 1;
+                text-align: center;
+            }
+            .sync-status-stat-label {
+                font-size: 12px;
+                color: #666;
+                margin-bottom: 5px;
+            }
+            .sync-status-stat-value {
+                font-size: 20px;
+                font-weight: 600;
+                color: #007bff;
+            }
+            .sync-status-confirm-inline {
+                background: #fff3cd;
+                border: 2px solid #ffc107;
+                padding: 15px;
+                border-radius: 4px;
+                margin: 15px 0;
+            }
+            .sync-status-confirm-inline h4 {
+                margin: 0 0 10px 0;
+                color: #856404;
+            }
+            .sync-status-errors {
+                display: none;
+                background: #f8d7da;
+                border: 1px solid #f5c6cb;
+                padding: 15px;
+                border-radius: 4px;
+                margin: 15px 0;
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .sync-status-errors.show {
+                display: block;
+            }
+            .sync-status-errors h4 {
+                margin: 0 0 10px 0;
+                color: #721c24;
+                font-size: 14px;
+            }
+            .sync-status-error-list {
+                list-style: none;
+                padding: 0;
+                margin: 0;
+            }
+            .sync-status-error-item {
+                padding: 8px;
+                margin: 5px 0;
+                background: white;
+                border-left: 3px solid #dc3545;
+                border-radius: 3px;
+                font-size: 12px;
+                color: #721c24;
+            }
+            .sync-status-error-item strong {
+                color: #721c24;
+            }
         </style>
     </head>
     <body>
@@ -844,11 +1462,17 @@ async def sync_page():
         <div class="controls">
             <div class="controls-row">
                 <label>Folder 1:</label>
-                <input type="text" id="folder1" placeholder="C:\\folder1 or C">
+                <div class="folder-input-group">
+                    <input type="text" id="folder1" placeholder="C:/folder1 or C">
+                    <button type="button" class="browse-btn" onclick="browseFolder('folder1')">Browse</button>
+                </div>
             </div>
             <div class="controls-row">
                 <label>Folder 2:</label>
-                <input type="text" id="folder2" placeholder="D:\\folder2 or D">
+                <div class="folder-input-group">
+                    <input type="text" id="folder2" placeholder="D:/folder2 or D">
+                    <button type="button" class="browse-btn" onclick="browseFolder('folder2')">Browse</button>
+                </div>
             </div>
             <div class="controls-row">
                 <label>Sync Strategy:</label>
@@ -866,6 +1490,73 @@ async def sync_page():
         
         <div id="messages"></div>
         
+        <div class="sync-status-panel" id="syncStatusPanel">
+            <div class="sync-status-header">
+                <span id="syncStatusTitle">Synchronization in Progress</span>
+                <div style="display: flex; gap: 10px;">
+                    <button onclick="abortSync()" id="abortBtn" style="padding: 5px 15px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Abort</button>
+                    <button onclick="closeSyncStatus()" id="closeSyncBtn" style="padding: 5px 15px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; display: none;">Close</button>
+                </div>
+            </div>
+            <div class="sync-status-current" id="syncStatusCurrent">
+                <div class="sync-status-current-file" id="syncStatusFile">Waiting to start...</div>
+                <div class="sync-status-current-path" id="syncStatusPath"></div>
+                <div class="sync-status-progress" id="syncStatusProgress"></div>
+            </div>
+            <div class="sync-status-confirm-inline" id="syncStatusConfirm" style="display: none;">
+                <h4>Confirm File Copy</h4>
+                <div id="syncConfirmFileInfo"></div>
+                <div class="confirm-dialog-buttons" style="margin-top: 15px;">
+                    <button class="btn-yes" onclick="confirmChoice('yes')">Yes (Y)</button>
+                    <button class="btn-no" onclick="confirmChoice('no')">No (N)</button>
+                    <button class="btn-all" onclick="confirmChoice('all')">All (A)</button>
+                    <button class="btn-abort" onclick="confirmChoice('abort')">Abort</button>
+                </div>
+            </div>
+            <div class="sync-status-stats">
+                <div class="sync-status-stat">
+                    <div class="sync-status-stat-label">Copied</div>
+                    <div class="sync-status-stat-value" id="syncStatCopied">0</div>
+                </div>
+                <div class="sync-status-stat">
+                    <div class="sync-status-stat-label">Skipped</div>
+                    <div class="sync-status-stat-value" id="syncStatSkipped" style="color: #6c757d;">0</div>
+                </div>
+                <div class="sync-status-stat">
+                    <div class="sync-status-stat-label">Errors</div>
+                    <div class="sync-status-stat-value" id="syncStatErrors" style="color: #dc3545;">0</div>
+                </div>
+                <div class="sync-status-stat">
+                    <div class="sync-status-stat-label">Total</div>
+                    <div class="sync-status-stat-value" id="syncStatTotal" style="color: #28a745;">0</div>
+                </div>
+            </div>
+            <div class="sync-status-errors" id="syncStatusErrors">
+                <h4>Error Details:</h4>
+                <ul class="sync-status-error-list" id="syncErrorList"></ul>
+            </div>
+        </div>
+        
+        <div class="confirm-dialog-overlay" id="confirmOverlay"></div>
+        <div class="confirm-dialog" id="confirmDialog">
+            <h3>Confirm File Copy</h3>
+            <div class="file-info" id="confirmFileInfo"></div>
+            <div class="confirm-dialog-buttons">
+                <button class="btn-yes" onclick="confirmChoice('yes')">Yes (Y)</button>
+                <button class="btn-no" onclick="confirmChoice('no')">No (N)</button>
+                <button class="btn-all" onclick="confirmChoice('all')">All (A)</button>
+                <button class="btn-abort" onclick="confirmChoice('abort')">Abort</button>
+            </div>
+        </div>
+        
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar-wrapper">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div class="progress-text" id="progressText">Scanning folders and analyzing...</div>
+            <div class="progress-file-list" id="progressFileList" style="display: none;"></div>
+        </div>
+        
         <div class="sync-container" id="syncContainer" style="display: none;">
             <div class="panel">
                 <div class="panel-header">Folder 1</div>
@@ -882,12 +1573,678 @@ async def sync_page():
         <script>
             let currentAnalysis = null;
             let token = localStorage.getItem('access_token');
+            let currentFolderInput = null;
             
             if (!token) {
                 window.location.href = '/login';
             }
             
-            async function analyzeSync() {
+            // Function to handle folder selection
+            function handleFolderSelection(files, inputId) {
+                if (!files || files.length === 0) {
+                    return;
+                }
+                
+                const input = document.getElementById(inputId);
+                
+                if (!input) {
+                    return;
+                }
+                
+                // Store original input value BEFORE any changes
+                const originalInputValue = input.value || '';
+                
+                let folderPath = '';
+                let detectedDrive = '';
+                
+                // Try to detect full path from file paths (if available)
+                // Find the common root directory (the selected folder) from all files
+                const backslash = String.fromCharCode(92);
+                let allPaths = [];
+                let commonRootPath = '';
+                
+                for (let i = 0; i < Math.min(files.length, 50); i++) {
+                    const file = files[i];
+                    if (file.path) {
+                        // Extract drive letter from file path (e.g., "C:\\Users\\...")
+                        const driveMatch = file.path.match(/^([A-Za-z]:)/i);
+                        if (driveMatch) {
+                            detectedDrive = driveMatch[1].toUpperCase();
+                            // Extract directory path (the full folder path)
+                            // This gives us the full path like "d:\\my\\local\\folder"
+                            const dirPath = file.path.substring(0, 
+                                Math.max(file.path.lastIndexOf(backslash), file.path.lastIndexOf('/')));
+                            if (dirPath && dirPath.includes(backslash)) {
+                                // Add the full directory path
+                                allPaths.push(dirPath);
+                            }
+                        }
+                    }
+                }
+                
+                // Find the common root directory (the selected folder)
+                // All files from the same selected folder will share the same directory prefix
+                if (allPaths.length > 0) {
+                    // Normalize all paths to lowercase for comparison
+                    const normalizedPaths = allPaths.map(p => p.toLowerCase());
+                    
+                    // Find the longest common prefix
+                    let commonPrefix = normalizedPaths[0];
+                    for (let i = 1; i < normalizedPaths.length; i++) {
+                        const currentPath = normalizedPaths[i];
+                        let prefix = '';
+                        const minLength = Math.min(commonPrefix.length, currentPath.length);
+                        for (let j = 0; j < minLength; j++) {
+                            if (commonPrefix[j] === currentPath[j]) {
+                                prefix += commonPrefix[j];
+                            } else {
+                                break;
+                            }
+                        }
+                        commonPrefix = prefix;
+                    }
+                    
+                    // Get the original case from the first path
+                    const firstPath = allPaths[0];
+                    const commonPrefixLength = commonPrefix.length;
+                    let originalCasePrefix = firstPath.substring(0, commonPrefixLength);
+                    
+                    // The common prefix should be the selected folder path
+                    // Example: If files are in "d:\\my\\local\\folder" and "d:\\my\\local\\folder\\subfolder"
+                    // Common prefix = "d:\\my\\local\\folder" (the selected folder)
+                    // Use the common prefix as-is - it IS the full selected folder path
+                    folderPath = originalCasePrefix;
+                    
+                    // Remove trailing slash if present
+                    if (folderPath.endsWith(backslash) || folderPath.endsWith('/')) {
+                        folderPath = folderPath.slice(0, -1);
+                    }
+                    
+                    // Ensure we have a valid path (at least drive letter + folder)
+                    if (!folderPath || folderPath.length < 3 || !folderPath.includes(backslash)) {
+                        // Fallback: use the shortest path (likely the selected folder)
+                        allPaths.sort((a, b) => a.length - b.length);
+                        folderPath = allPaths[0];
+                        // Remove trailing slash
+                        if (folderPath.endsWith(backslash) || folderPath.endsWith('/')) {
+                            folderPath = folderPath.slice(0, -1);
+                        }
+                    }
+                }
+                
+                // If we found a path with drive letter, verify it's complete
+                if (folderPath && detectedDrive) {
+                    // Check if path looks complete (has drive letter and at least one folder)
+                    const backslash = String.fromCharCode(92);
+                    const hasFullPath = folderPath.includes(backslash) && folderPath.length > 3;
+                    
+                    if (hasFullPath) {
+                        // Normalize and save - preserve FULL path structure
+                        let normalizedPath = folderPath.trim();
+                        
+                        // Convert forward slashes to backslashes if needed
+                        if (normalizedPath.includes('/') && !normalizedPath.includes(backslash)) {
+                            normalizedPath = normalizedPath.replace(/\\//g, backslash);
+                        }
+                        
+                        // Remove trailing slash
+                        const trailingSlashRegex = new RegExp('[' + backslash + '/]+$');
+                        normalizedPath = normalizedPath.replace(trailingSlashRegex, '');
+                        
+                        // Ensure drive letter is uppercase
+                        const driveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
+                        if (driveMatch) {
+                            normalizedPath = driveMatch[1].toUpperCase() + normalizedPath.substring(2);
+                        }
+                        
+                        // Save FULL path - don't modify it further
+                        input.value = normalizedPath;
+                        showMessage('Folder path saved: ' + normalizedPath, 'success');
+                        return;
+                    } else {
+                        // Path doesn't look complete - show prompt to get full path
+                        const folderName = folderPath.split(backslash).pop() || folderPath;
+                        const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
+                                             'Folder name: ' + folderName + String.fromCharCode(10) + 
+                                             'Example: ' + detectedDrive + backslash + 'my' + backslash + 'local' + backslash + folderName;
+                        const userPath = prompt(promptMessage, folderPath);
+                        
+                        if (userPath && userPath.trim()) {
+                            folderPath = userPath.trim();
+                            // Continue to normalization below
+                        } else {
+                            showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                            return;
+                        }
+                    }
+                }
+                
+                // If no full path available, construct path from available information
+                const file = files[0];
+                
+                if (file.path) {
+                    // Some browsers expose full path (older Chrome/Edge)
+                    // Extract the full directory path (preserve entire structure)
+                    const backslash = String.fromCharCode(92);
+                    const dirPath = file.path.substring(0, 
+                        Math.max(file.path.lastIndexOf(backslash), file.path.lastIndexOf('/')));
+                    if (dirPath) {
+                        // Use the full path from file.path (preserve entire structure)
+                        const pathDriveMatch = dirPath.match(/^([A-Za-z]:)/i);
+                        if (pathDriveMatch) {
+                            // Full path with drive letter - use as-is
+                            folderPath = dirPath;
+                        } else if (detectedDrive) {
+                            // Add drive letter if missing
+                            folderPath = detectedDrive + backslash + dirPath;
+                        } else {
+                            // Use path as-is
+                            folderPath = dirPath;
+                        }
+                    }
+                } else if (file.webkitRelativePath) {
+                    // webkitRelativePath is relative to the SELECTED folder
+                    // Try to get full path from file.path first (most reliable)
+                    const backslash = String.fromCharCode(92);
+                    let fullPathFromFile = '';
+                    let driveLetter = detectedDrive;
+                    let bestPathDepth = 0;
+                    
+                    // Check ALL files for file.path to get the deepest full path
+                    for (let i = 0; i < Math.min(files.length, 50); i++) {
+                        const f = files[i];
+                        if (f.path) {
+                            const driveMatch = f.path.match(/^([A-Za-z]:)/i);
+                            if (driveMatch) {
+                                driveLetter = driveMatch[1].toUpperCase();
+                                // Extract directory path (full folder path)
+                                const dirPath = f.path.substring(0, 
+                                    Math.max(f.path.lastIndexOf(backslash), f.path.lastIndexOf('/')));
+                                if (dirPath && dirPath.includes(backslash)) {
+                                    // Count path depth - use deepest path (preserves full structure)
+                                    const pathDepth = (dirPath.match(new RegExp(backslash, 'g')) || []).length;
+                                    if (pathDepth > bestPathDepth) {
+                                        fullPathFromFile = dirPath;
+                                        bestPathDepth = pathDepth;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If we have a full path from file.path, use it (preserves full structure)
+                    if (fullPathFromFile) {
+                        folderPath = fullPathFromFile;
+                    } else {
+                        // Find the deepest folder structure from all files
+                        // This gives us the full relative path structure within the selected folder
+                        let maxDepth = 0;
+                        let deepestRelativePath = '';
+                        let selectedFolderName = '';
+                        
+                        for (let i = 0; i < Math.min(files.length, 50); i++) {
+                            const f = files[i];
+                            if (f.webkitRelativePath) {
+                                const parts = f.webkitRelativePath.split('/');
+                                if (parts.length > 0 && !selectedFolderName) {
+                                    selectedFolderName = parts[0];
+                                }
+                                // Remove the filename (last part) to get the folder path
+                                if (parts.length > 1) {
+                                    const folderParts = parts.slice(0, -1);
+                                    const folderPath = folderParts.join(backslash);
+                                    if (folderParts.length > maxDepth) {
+                                        maxDepth = folderParts.length;
+                                        deepestRelativePath = folderPath;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Construct full path: drive + folder structure
+                        if (driveLetter) {
+                            if (deepestRelativePath) {
+                                // Use drive + relative path structure
+                                folderPath = driveLetter + backslash + deepestRelativePath;
+                            } else if (selectedFolderName) {
+                                // Just drive + folder name
+                                folderPath = driveLetter + backslash + selectedFolderName;
+                            } else {
+                                // Just drive
+                                folderPath = driveLetter + backslash;
+                            }
+                        } else {
+                            // No drive letter - use just the path structure
+                            if (deepestRelativePath) {
+                                folderPath = deepestRelativePath;
+                            } else if (selectedFolderName) {
+                                folderPath = selectedFolderName;
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: Use detected drive or folder name only
+                    if (detectedDrive) {
+                        const backslash = String.fromCharCode(92);
+                        folderPath = detectedDrive + backslash;
+                    } else {
+                        folderPath = '';
+                    }
+                }
+                
+                // Normalize and save the path
+                if (folderPath) {
+                    // Normalize path: replace forward slashes with backslashes for Windows
+                    // But keep the format as user entered if it's valid
+                    let normalizedPath = folderPath.trim();
+                    
+                    // Extract drive letter from entered path FIRST, before any processing
+                    const pathDriveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
+                    const pathDriveLetter = pathDriveMatch ? pathDriveMatch[1].toUpperCase() : '';
+                    
+                    // If path doesn't have a drive letter, show prompt dialog to get full path
+                    if (!pathDriveLetter && normalizedPath.length > 0) {
+                        const backslash = String.fromCharCode(92);
+                        const folderName = normalizedPath.split(backslash).pop() || normalizedPath.split('/').pop() || normalizedPath;
+                        let suggestedDrive = detectedDrive || 'D';
+                        let suggestedPath = suggestedDrive + backslash + normalizedPath.replace(/\\//g, backslash);
+                        
+                        const promptMessage = 'Please enter the full path including drive letter:' + String.fromCharCode(10) + 
+                                             'Folder name: ' + folderName + String.fromCharCode(10) + 
+                                             'Example: ' + suggestedPath;
+                        const userPath = prompt(promptMessage, suggestedPath);
+                        
+                        if (userPath && userPath.trim()) {
+                            normalizedPath = userPath.trim();
+                            // Re-extract drive letter after user input
+                            const newDriveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
+                            if (!newDriveMatch) {
+                                showMessage('Warning: Path should include drive letter (e.g., D:\\folder). Please enter manually.', 'error');
+                                return;
+                            }
+                        } else {
+                            showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                            return;
+                        }
+                    }
+                    
+                    // If path uses forward slashes, convert to backslashes for Windows
+                    // But preserve drive letter if present
+                    if (normalizedPath.includes('/')) {
+                        const backslash = String.fromCharCode(92);
+                        // Convert forward slashes to backslashes
+                        normalizedPath = normalizedPath.replace(/\\//g, backslash);
+                    }
+                    
+                    // Remove trailing slash/backslash (but preserve drive letter)
+                    const backslash = String.fromCharCode(92);
+                    // Don't remove trailing slash if it's just after drive letter (e.g., D:\\)
+                    if (!normalizedPath.match(/^[A-Za-z]:$/i)) {
+                        const trailingSlashRegex = new RegExp('[' + backslash + '/]+$');
+                        normalizedPath = normalizedPath.replace(trailingSlashRegex, '');
+                    }
+                    
+                    // CRITICAL: Preserve the FULL path structure - don't extract only last folder
+                    // Just ensure drive letter is present and uppercase
+                    let driveLetter = pathDriveLetter;
+                    if (!driveLetter && detectedDrive) {
+                        driveLetter = detectedDrive;
+                    }
+                    
+                    // Ensure drive letter is present and uppercase (if we have one)
+                    if (driveLetter && !normalizedPath.match(/^[A-Za-z]:/i)) {
+                        // Add drive letter if missing
+                        normalizedPath = driveLetter + backslash + normalizedPath;
+                    } else if (driveLetter && normalizedPath.match(/^[A-Za-z]:/i)) {
+                        // Ensure drive letter is uppercase
+                        const currentDrive = normalizedPath.match(/^([A-Za-z]:)/i)[1].toUpperCase();
+                        normalizedPath = currentDrive + normalizedPath.substring(2);
+                    }
+                    
+                    // Remove trailing slash
+                    if (normalizedPath.length > 2 && (normalizedPath.endsWith(backslash) || normalizedPath.endsWith('/'))) {
+                        normalizedPath = normalizedPath.slice(0, -1);
+                    }
+                    
+                    // Validate final path has drive letter
+                    if (!normalizedPath.match(/^[A-Za-z]:/i) && normalizedPath.length > 0) {
+                        showMessage('Warning: Path does not include drive letter. Please enter full path manually.', 'error');
+                    }
+                    
+                    // Save to input
+                    input.value = normalizedPath;
+                    showMessage('Folder path saved: ' + normalizedPath, 'success');
+                }
+            }
+            
+            // Make browseFolder globally accessible
+            async function browseFolder(inputId) {
+                // Try File System Access API first (if supported)
+                if ('showDirectoryPicker' in window) {
+                    try {
+                        const dirHandle = await window.showDirectoryPicker({
+                            mode: 'read'
+                        });
+                        
+                        const input = document.getElementById(inputId);
+                        if (!input) {
+                            return;
+                        }
+                        
+                        // Try to get full path by reading files from the directory
+                        // Some browsers expose file.path even with File System Access API
+                        let folderPath = '';
+                        let detectedDrive = '';
+                        const backslash = String.fromCharCode(92);
+                        let allPaths = [];
+                        
+                        // Read files from directory to extract paths
+                        try {
+                            const files = [];
+                            async function readDirectory(handle, depth = 0) {
+                                if (depth > 3 || files.length > 100) return; // Limit depth and file count
+                                for await (const entry of handle.values()) {
+                                    if (entry.kind === 'file') {
+                                        try {
+                                            const file = await entry.getFile();
+                                            files.push(file);
+                                            if (files.length >= 20) break; // Get enough files for path detection
+                                        } catch (e) {
+                                            // Skip files we can't read
+                                        }
+                                    } else if (entry.kind === 'directory' && depth < 2) {
+                                        await readDirectory(entry, depth + 1);
+                                    }
+                                    if (files.length >= 20) break;
+                                }
+                            }
+                            await readDirectory(dirHandle);
+                            
+                            // Extract paths from files
+                            for (let i = 0; i < files.length; i++) {
+                                const file = files[i];
+                                if (file.path) {
+                                    const driveMatch = file.path.match(/^([A-Za-z]:)/i);
+                                    if (driveMatch) {
+                                        detectedDrive = driveMatch[1].toUpperCase();
+                                        const dirPath = file.path.substring(0, 
+                                            Math.max(file.path.lastIndexOf(backslash), file.path.lastIndexOf('/')));
+                                        if (dirPath && dirPath.includes(backslash)) {
+                                            allPaths.push(dirPath);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Find common root directory (the selected folder)
+                            if (allPaths.length > 0) {
+                                const normalizedPaths = allPaths.map(p => p.toLowerCase());
+                                let commonPrefix = normalizedPaths[0];
+                                for (let i = 1; i < normalizedPaths.length; i++) {
+                                    const currentPath = normalizedPaths[i];
+                                    let prefix = '';
+                                    const minLength = Math.min(commonPrefix.length, currentPath.length);
+                                    for (let j = 0; j < minLength; j++) {
+                                        if (commonPrefix[j] === currentPath[j]) {
+                                            prefix += commonPrefix[j];
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    commonPrefix = prefix;
+                                }
+                                
+                                const firstPath = allPaths[0];
+                                const commonPrefixLength = commonPrefix.length;
+                                let originalCasePrefix = firstPath.substring(0, commonPrefixLength);
+                                
+                                if (originalCasePrefix.endsWith(backslash) || originalCasePrefix.endsWith('/')) {
+                                    originalCasePrefix = originalCasePrefix.slice(0, -1);
+                                }
+                                
+                                if (originalCasePrefix && originalCasePrefix.length >= 3 && originalCasePrefix.includes(backslash)) {
+                                    folderPath = originalCasePrefix;
+                                }
+                            }
+                        } catch (e) {
+                            console.log('Could not read directory files for path extraction:', e);
+                        }
+                        
+                        // If we couldn't get full path from files, show prompt dialog
+                        if (!folderPath || !folderPath.includes(backslash)) {
+                            const folderName = dirHandle.name || 'Selected Folder';
+                            const currentValue = input.value || '';
+                            
+                            // Try to suggest a path from current value
+                            let suggestedPath = '';
+                            if (currentValue) {
+                                const driveMatch = currentValue.match(/^([A-Za-z]:)/i);
+                                if (driveMatch) {
+                                    const drive = driveMatch[1].toUpperCase();
+                                    suggestedPath = drive + backslash + folderName;
+                                } else {
+                                    suggestedPath = folderName;
+                                }
+                            } else {
+                                suggestedPath = folderName;
+                            }
+                            
+                            // Show prompt dialog to enter full path
+                            const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
+                                                 'Folder name: ' + folderName + String.fromCharCode(10) + 
+                                                 'Example: D:\\my\\local\\folder';
+                            const userPath = prompt(promptMessage, suggestedPath);
+                            
+                            if (userPath && userPath.trim()) {
+                                folderPath = userPath.trim();
+                            } else if (suggestedPath) {
+                                folderPath = suggestedPath;
+                            } else {
+                                showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                                return;
+                            }
+                        }
+                        
+                        // Normalize and save the path
+                        if (folderPath) {
+                            let normalizedPath = folderPath.trim();
+                            
+                            // Extract drive letter from path
+                            const pathDriveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
+                            const pathDriveLetter = pathDriveMatch ? pathDriveMatch[1].toUpperCase() : '';
+                            
+                            // If path uses forward slashes, convert to backslashes for Windows
+                            if (normalizedPath.includes('/') && !normalizedPath.includes(backslash)) {
+                                const forwardSlash = String.fromCharCode(47);
+                                normalizedPath = normalizedPath.replace(new RegExp(forwardSlash, 'g'), backslash);
+                            }
+                            
+                            // Remove trailing slash/backslash (but preserve drive letter)
+                            if (!normalizedPath.match(/^[A-Za-z]:$/i)) {
+                                const trailingSlashRegex = new RegExp('[' + backslash + '/]+$');
+                                normalizedPath = normalizedPath.replace(trailingSlashRegex, '');
+                            }
+                            
+                            // Ensure drive letter is uppercase
+                            if (normalizedPath.match(/^[A-Za-z]:/i)) {
+                                const driveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
+                                normalizedPath = driveMatch[1].toUpperCase() + normalizedPath.substring(2);
+                            }
+                            
+                            // Validate that we have a proper Windows path
+                            if (!normalizedPath.match(/^[A-Za-z]:/i) && normalizedPath.length > 0) {
+                                showMessage('Warning: Path does not include drive letter. Please enter full path like D:\\folder', 'error');
+                            }
+                            
+                            // Save to input
+                            input.value = normalizedPath;
+                            showMessage('Folder path saved: ' + normalizedPath, 'success');
+                        }
+                        return;
+                    } catch (err) {
+                        if (err.name === 'AbortError') {
+                            // User cancelled, do nothing
+                            return;
+                        }
+                        console.error('Error with File System API:', err);
+                        // Fall through to file input fallback
+                    }
+                }
+                
+                // Fallback: Create file input dynamically for Yandex browser and others
+                try {
+                    // Remove any existing folder picker
+                    const existingPicker = document.getElementById('folderPicker');
+                    if (existingPicker) {
+                        existingPicker.remove();
+                    }
+                    
+                    // Create new file input element
+                    const folderPicker = document.createElement('input');
+                    folderPicker.type = 'file';
+                    folderPicker.id = 'folderPicker';
+                    folderPicker.setAttribute('webkitdirectory', '');
+                    folderPicker.setAttribute('directory', '');
+                    folderPicker.setAttribute('multiple', '');
+                    folderPicker.style.position = 'fixed';
+                    folderPicker.style.left = '-9999px';
+                    folderPicker.style.top = '-9999px';
+                    folderPicker.style.opacity = '0';
+                    folderPicker.style.width = '1px';
+                    folderPicker.style.height = '1px';
+                    
+                    // Add change handler
+                    folderPicker.addEventListener('change', function(e) {
+                        if (e.target.files && e.target.files.length > 0) {
+                            handleFolderSelection(e.target.files, inputId);
+                        }
+                        // Clean up
+                        setTimeout(() => {
+                            if (folderPicker.parentNode) {
+                                folderPicker.parentNode.removeChild(folderPicker);
+                            }
+                        }, 100);
+                    });
+                    
+                    // Add to DOM
+                    document.body.appendChild(folderPicker);
+                    
+                    // Trigger click - must be in user interaction context
+                    // Use setTimeout to ensure DOM is ready
+                    setTimeout(() => {
+                        try {
+                            // Try multiple methods to trigger
+                            if (folderPicker.click) {
+                                folderPicker.click();
+                            } else if (folderPicker.dispatchEvent) {
+                                const clickEvent = new MouseEvent('click', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window
+                                });
+                                folderPicker.dispatchEvent(clickEvent);
+                            } else {
+                                // Last resort: create event manually
+                                const event = document.createEvent('MouseEvents');
+                                event.initEvent('click', true, true);
+                                folderPicker.dispatchEvent(event);
+                            }
+                        } catch (err) {
+                            console.error('Error triggering folder picker:', err);
+                            showMessage('Cannot open folder picker. Please enter path manually.', 'error');
+                            if (folderPicker.parentNode) {
+                                folderPicker.parentNode.removeChild(folderPicker);
+                            }
+                        }
+                    }, 10);
+                } catch (err) {
+                    console.error('Error creating folder picker:', err);
+                    showMessage('Cannot open folder picker. Please enter path manually.', 'error');
+                }
+            }
+            
+            // Also assign to window for explicit global access
+            window.browseFolder = browseFolder;
+            
+            function showProgress() {
+                const progressContainer = document.getElementById('progressContainer');
+                const progressBar = document.getElementById('progressBar');
+                const progressFileList = document.getElementById('progressFileList');
+                if (progressContainer && progressBar) {
+                    progressContainer.classList.add('show');
+                    const progressText = document.getElementById('progressText');
+                    if (progressText) {
+                        progressText.textContent = 'Scanning folders and analyzing… — Scanned: 0  Equals: 0  Needs sync: 0';
+                    }
+                    if (progressFileList) {
+                        progressFileList.style.display = 'block';
+                        progressFileList.innerHTML = '';
+                    }
+                    // Animate progress bar (simulated progress)
+                    let progress = 0;
+                    const interval = setInterval(() => {
+                        progress += Math.random() * 15;
+                        if (progress > 90) {
+                            progress = 90; // Don't go to 100% until done
+                        }
+                        progressBar.style.width = progress + '%';
+                    }, 500);
+                    
+                    // Store interval ID to clear it later
+                    progressContainer.dataset.intervalId = interval;
+                }
+            }
+            
+            function updateProgressFile(fileName, progress, total, percentage) {
+                const progressFileList = document.getElementById('progressFileList');
+                const progressText = document.getElementById('progressText');
+                if (progressFileList) {
+                    // Add file to list
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'progress-file-item';
+                    fileItem.textContent = `Comparing: ${fileName} (${progress}/${total} - ${percentage}%)`;
+                    progressFileList.insertBefore(fileItem, progressFileList.firstChild);
+                    
+                    // Keep only last 10 items
+                    while (progressFileList.children.length > 10) {
+                        progressFileList.removeChild(progressFileList.lastChild);
+                    }
+                }
+                if (progressText) {
+                    progressText.textContent = `Comparing files: ${progress} of ${total} (${percentage}%)`;
+                }
+            }
+            
+            function hideProgress() {
+                const progressContainer = document.getElementById('progressContainer');
+                const progressBar = document.getElementById('progressBar');
+                if (progressContainer && progressBar) {
+                    // Clear animation interval
+                    if (progressContainer.dataset.intervalId) {
+                        clearInterval(parseInt(progressContainer.dataset.intervalId));
+                        delete progressContainer.dataset.intervalId;
+                    }
+                    // Complete the progress bar
+                    progressBar.style.width = '100%';
+                    // Hide after a short delay
+                    setTimeout(() => {
+                        progressContainer.classList.remove('show');
+                        progressBar.style.width = '0%';
+                    }, 300);
+                }
+            }
+            
+            // Make analyzeSync globally accessible
+            window.analyzeSync = async function analyzeSync() {
+                // Get fresh token from localStorage
+                const currentToken = localStorage.getItem('access_token');
+                
+                if (!currentToken) {
+                    showMessage('Not authenticated. Please login again.', 'error');
+                    window.location.href = '/login';
+                    return;
+                }
+                
                 const folder1 = document.getElementById('folder1').value;
                 const folder2 = document.getElementById('folder2').value;
                 
@@ -899,34 +2256,191 @@ async def sync_page():
                 showMessage('Analyzing...', 'info');
                 document.getElementById('executeBtn').disabled = true;
                 
+                // Set up progress bar to show after 5 seconds
+                let progressTimeout = null;
+                const startTime = Date.now();
+                
                 try {
+                    // Start timer to show progress bar after 5 seconds
+                    progressTimeout = setTimeout(() => {
+                        const elapsed = Date.now() - startTime;
+                        if (elapsed >= 5000) {
+                            showProgress();
+                        }
+                    }, 5000);
+                    
+                    // Assign a job id and start polling progress
+                    const jobId = 'job-' + Date.now() + '-' + Math.floor(Math.random()*100000);
+                    console.log('[DEBUG] analyzeSync: Starting with jobId:', jobId);
+                    
+                    const progressContainer = document.getElementById('progressContainer');
+                    
+                    // Ensure progress UI is visible immediately
+                    showProgress();
+
+                    // Start polling every ~2 seconds
+                    const pollFn = async () => {
+                        try {
+                            const url = '/api/sync/progress?job_id=' + encodeURIComponent(jobId);
+                            console.log('[DEBUG] Polling progress for jobId:', jobId, 'URL:', url);
+                            const r = await fetch(url, {
+                                headers: { 'Authorization': 'Bearer ' + currentToken }
+                            });
+                            if (!r.ok) {
+                                console.error('[DEBUG] Poll response not OK:', r.status, r.statusText);
+                                return;
+                            }
+                            const p = await r.json();
+                            console.log('[DEBUG] Progress poll response:', p, 'jobId:', jobId);
+                            // Ensure values are numbers
+                            const scanned = Number(p.scanned) || 0;
+                            const equals = Number(p.equals) || 0;
+                            const needsSync = Number(p.needs_sync) || 0;
+                            console.log('[DEBUG] Parsed values:', {scanned, equals, needsSync});
+                            const dots = '.'.repeat(Math.floor((Date.now()/1000)%4));
+                            const line = `Scanning folders and analyzing${dots}  —  Scanned: ${scanned}  Equals: ${equals}  Needs sync: ${needsSync}`;
+                            const progressTextEl = document.getElementById('progressText');
+                            if (progressTextEl) {
+                                progressTextEl.textContent = line;
+                                console.log('[DEBUG] Updated progressText with:', line);
+                            } else {
+                                console.error('[DEBUG] progressTextEl not found!');
+                            }
+                            
+                        } catch (e) {
+                            console.error('[DEBUG] Progress poll error:', e, e.stack);
+                        }
+                    };
+                    
+                    // Start polling BEFORE sending the request, so it starts immediately
+                    console.log('[DEBUG] Starting polling with jobId:', jobId);
+                    // Wait a tiny bit to ensure backend has initialized PROGRESS_STORE
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    // Run once immediately so totals appear without waiting
+                    await pollFn();
+                    const pollId = setInterval(pollFn, 2000);
+                    console.log('[DEBUG] Polling started with interval ID:', pollId);
+                    // Save to container for later cleanup
+                    if (progressContainer) progressContainer.dataset.progressPollId = String(pollId);
+                    
+                    // Send the request (don't await yet - let it run in background)
+                    console.log('[DEBUG] Sending analyze request with jobId:', jobId);
                     const response = await fetch('/api/sync/analyze', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
+                            'Authorization': 'Bearer ' + currentToken
                         },
                         body: JSON.stringify({
-                            folder1: (folder1.length > 1 || folder1.includes('\\')) ? folder1 : null,
-                            folder2: (folder2.length > 1 || folder2.includes('\\')) ? folder2 : null,
-                            drive1: (folder1.length === 1 && !folder1.includes('\\')) ? folder1 : null,
-                            drive2: (folder2.length === 1 && !folder2.includes('\\')) ? folder2 : null
+                            folder1: (folder1.length > 1 || folder1.includes('/') || folder1.includes(String.fromCharCode(92))) ? folder1 : null,
+                            folder2: (folder2.length > 1 || folder2.includes('/') || folder2.includes(String.fromCharCode(92))) ? folder2 : null,
+                            drive1: (folder1.length === 1 && !folder1.includes('/') && !folder1.includes(String.fromCharCode(92))) ? folder1 : null,
+                            drive2: (folder2.length === 1 && !folder2.includes('/') && !folder2.includes(String.fromCharCode(92))) ? folder2 : null,
+                            job_id: jobId
                         })
                     });
+                    console.log('[DEBUG] Analyze request completed, status:', response.status);
+                    
+                    // Clear timeout if response came quickly
+                    if (progressTimeout) {
+                        clearTimeout(progressTimeout);
+                    }
+                    
+                    // Check if we should show progress bar based on elapsed time
+                    const elapsed = Date.now() - startTime;
+                    if (elapsed >= 5000) {
+                        showProgress();
+                    }
                     
                     const data = await response.json();
                     
+                    // Display progress updates if available
+                    if (data.progress_updates && Array.isArray(data.progress_updates)) {
+                        data.progress_updates.forEach(update => {
+                            if (update.file && update.progress && update.total) {
+                                updateProgressFile(update.file, update.progress, update.total, update.percentage || 0);
+                            }
+                        });
+                    }
+                    
+                    // Stop polling
+                    try {
+                        const progressContainer2 = document.getElementById('progressContainer');
+                        if (progressContainer2 && progressContainer2.dataset.progressPollId) {
+                            clearInterval(parseInt(progressContainer2.dataset.progressPollId));
+                            delete progressContainer2.dataset.progressPollId;
+                        }
+                    } catch (e) {}
+                    
+                    // Hide progress bar after response
+                    hideProgress();
+                    
                     if (response.ok) {
+                        // Debug: Log the response data
+                        console.log('Analysis response:', data);
+                        console.log('Analysis data:', data.analysis);
+                        
                         currentAnalysis = data;
                         displayAnalysis(data);
                         document.getElementById('executeBtn').disabled = false;
-                        showMessage('Analysis complete', 'success');
+                        
+                        // Show summary message
+                        if (data.analysis) {
+                            // Normalize folder paths with uppercase drive letters
+                            function normalizeFolderPath(path) {
+                                if (!path || typeof path !== 'string') {
+                                    return path;
+                                }
+                                const driveMatch = path.match(/^([A-Za-z]:)/i);
+                                if (driveMatch) {
+                                    return driveMatch[1].toUpperCase() + path.substring(2);
+                                }
+                                return path;
+                            }
+                            const folder1Path = normalizeFolderPath(data.analysis.folder1) || 'Folder 1';
+                            const folder2Path = normalizeFolderPath(data.analysis.folder2) || 'Folder 2';
+                            const total1 = data.analysis.missing_count_folder2 || 0;
+                            const total2 = data.analysis.missing_count_folder1 || 0;
+                            const dupCount = data.analysis.duplicate_count || 0;
+                            showMessage(`Analysis complete: ${total1} files only in ${folder1Path}, ${total2} files only in ${folder2Path}, ${dupCount} duplicates`, 'success');
+                        } else {
+                            showMessage('Analysis complete', 'success');
+                        }
                     } else {
-                        showMessage('Analysis failed: ' + (data.detail || 'Unknown error'), 'error');
+                        if (response.status === 401) {
+                            showMessage('Session expired. Please login again.', 'error');
+                            localStorage.removeItem('access_token');
+                            setTimeout(() => {
+                                window.location.href = '/login';
+                            }, 2000);
+                        } else {
+                            showMessage('Analysis failed: ' + (data.detail || 'Unknown error'), 'error');
+                        }
                     }
                 } catch (error) {
+                    // Hide progress bar on error
+                    if (progressTimeout) {
+                        clearTimeout(progressTimeout);
+                    }
+                    hideProgress();
                     showMessage('Error: ' + error.message, 'error');
+                } finally {
+                    document.getElementById('executeBtn').disabled = false;
                 }
+            }
+            
+            // Function to normalize folder path with uppercase drive letter
+            function normalizeFolderPath(path) {
+                if (!path || typeof path !== 'string') {
+                    return path;
+                }
+                // Match drive letter at the start (e.g., "d:\books" or "D:\books")
+                const driveMatch = path.match(/^([A-Za-z]:)/i);
+                if (driveMatch) {
+                    // Replace with uppercase drive letter
+                    return driveMatch[1].toUpperCase() + path.substring(2);
+                }
+                return path;
             }
             
             function displayAnalysis(analysis) {
@@ -936,24 +2450,60 @@ async def sync_page():
                 if (analysis.type === 'folder') {
                     const a = analysis.analysis;
                     
+                    // Get actual folder paths and normalize drive letters to uppercase
+                    const folder1Path = normalizeFolderPath(a.folder1) || 'Folder 1';
+                    const folder2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
+                    
+                    // Update panel headers with actual folder paths
+                    const panel1Header = document.querySelector('#syncContainer .panel:first-child .panel-header');
+                    const panel2Header = document.querySelector('#syncContainer .panel:last-child .panel-header');
+                    if (panel1Header) {
+                        panel1Header.textContent = folder1Path;
+                    }
+                    if (panel2Header) {
+                        panel2Header.textContent = folder2Path;
+                    }
+                    
                     // Display folder 1 files
                     const panel1 = document.getElementById('panel1');
                     panel1.innerHTML = '';
                     
+                    let hasContent = false;
+                    
                     if (a.missing_in_folder2 && a.missing_in_folder2.length > 0) {
+                        hasContent = true;
                         const header = document.createElement('div');
                         header.style.fontWeight = 'bold';
                         header.style.marginBottom = '10px';
-                        header.textContent = `Files only in Folder 1 (${a.missing_in_folder2.length}):`;
+                        const totalCount = a.missing_count_folder2 || a.missing_in_folder2.length;
+                        const displayedCount = a.missing_in_folder2.length;
+                        if (displayedCount < totalCount) {
+                            header.textContent = `Files only in ${folder1Path} (showing ${displayedCount} of ${totalCount}):`;
+                        } else {
+                            header.textContent = `Files only in ${folder1Path} (${totalCount}):`;
+                        }
                         panel1.appendChild(header);
                         
                         a.missing_in_folder2.forEach(file => {
                             const item = createFileItem(file, 'folder1');
                             panel1.appendChild(item);
                         });
+                        
+                        // Show indicator if there are more files
+                        if (displayedCount < totalCount) {
+                            const moreIndicator = document.createElement('div');
+                            moreIndicator.style.padding = '10px';
+                            moreIndicator.style.textAlign = 'center';
+                            moreIndicator.style.color = '#666';
+                            moreIndicator.style.fontStyle = 'italic';
+                            moreIndicator.style.borderTop = '1px solid #eee';
+                            moreIndicator.textContent = `... and ${totalCount - displayedCount} more files`;
+                            panel1.appendChild(moreIndicator);
+                        }
                     }
                     
                     if (a.duplicates && a.duplicates.length > 0) {
+                        hasContent = true;
                         const header = document.createElement('div');
                         header.style.fontWeight = 'bold';
                         header.style.marginTop = '20px';
@@ -972,45 +2522,177 @@ async def sync_page():
                         });
                     }
                     
+                    // Check if folders are identical (no differences)
+                    const totalMissing1 = a.missing_count_folder2 || 0;
+                    const totalMissing2 = a.missing_count_folder1 || 0;
+                    const totalDuplicates = a.duplicate_count || 0;
+                    const isIdentical = totalMissing1 === 0 && totalMissing2 === 0 && totalDuplicates === 0;
+                    
+                    // Supported file types
+                    const supportedTypes = ['.pdf', '.docx', '.txt', '.epub'];
+                    const typesList = supportedTypes.join(', ');
+                    
+                    if (isIdentical) {
+                        // Both folders are identical
+                        const message = document.createElement('div');
+                        message.style.padding = '20px';
+                        message.style.textAlign = 'center';
+                        message.style.color = '#28a745';
+                        message.style.fontWeight = '500';
+                        message.textContent = `Folder ${folder1Path} and ${folder2Path} are identical. Files of types: ${typesList}`;
+                        panel1.appendChild(message);
+                    } else if (!hasContent) {
+                        // Panel 1 has no content but folders are not identical
+                        // Check if folder1 has fewer files than folder2
+                        const count1 = a.missing_count_folder2 || 0;
+                        const count2 = a.missing_count_folder1 || 0;
+                        if (count1 < count2) {
+                            const message = document.createElement('div');
+                            message.style.padding = '20px';
+                            message.style.textAlign = 'center';
+                            message.style.color = '#666';
+                            message.textContent = `Folder ${folder1Path} has less files than ${folder2Path}.`;
+                            panel1.appendChild(message);
+                        } else {
+                            const message = document.createElement('div');
+                            message.style.padding = '20px';
+                            message.style.textAlign = 'center';
+                            message.style.color = '#666';
+                            message.textContent = `No differences found in ${folder1Path}. All files match or folder is empty.`;
+                            panel1.appendChild(message);
+                        }
+                    }
+                    
                     // Display folder 2 files
                     const panel2 = document.getElementById('panel2');
                     panel2.innerHTML = '';
                     
+                    hasContent = false;
+                    
                     if (a.missing_in_folder1 && a.missing_in_folder1.length > 0) {
+                        hasContent = true;
                         const header = document.createElement('div');
                         header.style.fontWeight = 'bold';
                         header.style.marginBottom = '10px';
-                        header.textContent = `Files only in Folder 2 (${a.missing_in_folder1.length}):`;
+                        const totalCount = a.missing_count_folder1 || a.missing_in_folder1.length;
+                        const displayedCount = a.missing_in_folder1.length;
+                        if (displayedCount < totalCount) {
+                            header.textContent = `Files only in ${folder2Path} (showing ${displayedCount} of ${totalCount}):`;
+                        } else {
+                            header.textContent = `Files only in ${folder2Path} (${totalCount}):`;
+                        }
                         panel2.appendChild(header);
                         
                         a.missing_in_folder1.forEach(file => {
                             const item = createFileItem(file, 'folder2');
                             panel2.appendChild(item);
                         });
+                        
+                        // Show indicator if there are more files
+                        if (displayedCount < totalCount) {
+                            const moreIndicator = document.createElement('div');
+                            moreIndicator.style.padding = '10px';
+                            moreIndicator.style.textAlign = 'center';
+                            moreIndicator.style.color = '#666';
+                            moreIndicator.style.fontStyle = 'italic';
+                            moreIndicator.style.borderTop = '1px solid #eee';
+                            moreIndicator.textContent = `... and ${totalCount - displayedCount} more files`;
+                            panel2.appendChild(moreIndicator);
+                        }
                     }
                     
-                    // Stats
-                    document.getElementById('stats1').innerHTML = `
-                        <div class="stats-item">
-                            <span>Files:</span>
-                            <span>${a.missing_count_folder2}</span>
-                        </div>
-                        <div class="stats-item">
-                            <span>Space needed:</span>
-                            <span>${formatBytes(a.space_needed_folder2)}</span>
-                        </div>
-                    `;
+                    if (isIdentical) {
+                        // Both folders are identical
+                        const message = document.createElement('div');
+                        message.style.padding = '20px';
+                        message.style.textAlign = 'center';
+                        message.style.color = '#28a745';
+                        message.style.fontWeight = '500';
+                        message.textContent = `Folder ${folder1Path} and ${folder2Path} are identical. Files of types: ${typesList}`;
+                        panel2.appendChild(message);
+                    } else if (!hasContent) {
+                        // Panel 2 has no content but folders are not identical
+                        // Check if folder2 has fewer files than folder1
+                        const count1 = a.missing_count_folder2 || 0;
+                        const count2 = a.missing_count_folder1 || 0;
+                        if (count2 < count1) {
+                            const message = document.createElement('div');
+                            message.style.padding = '20px';
+                            message.style.textAlign = 'center';
+                            message.style.color = '#666';
+                            message.textContent = `Folder ${folder2Path} has less files than ${folder1Path}.`;
+                            panel2.appendChild(message);
+                        } else {
+                            const message = document.createElement('div');
+                            message.style.padding = '20px';
+                            message.style.textAlign = 'center';
+                            message.style.color = '#666';
+                            message.textContent = `No differences found in ${folder2Path}. All files match or folder is empty.`;
+                            panel2.appendChild(message);
+                        }
+                    }
                     
-                    document.getElementById('stats2').innerHTML = `
-                        <div class="stats-item">
-                            <span>Files:</span>
-                            <span>${a.missing_count_folder1}</span>
-                        </div>
-                        <div class="stats-item">
-                            <span>Space needed:</span>
-                            <span>${formatBytes(a.space_needed_folder1)}</span>
-                        </div>
-                    `;
+                    // Determine which folder is bigger (has more missing files)
+                    // missing_count_folder2 = files only in folder1 (not in folder2)
+                    // missing_count_folder1 = files only in folder2 (not in folder1)
+                    const count1 = a.missing_count_folder2 || 0;  // Files only in folder1
+                    const count2 = a.missing_count_folder1 || 0;  // Files only in folder2
+                    const biggerFolder = count1 >= count2 ? 1 : 2;
+                    const biggerFolderCount = biggerFolder === 1 ? count1 : count2;
+                    
+                    // Space needed calculations:
+                    // space_needed_folder1 = space needed TO folder1 FROM folder2 (files in folder2 that folder1 needs)
+                    // space_needed_folder2 = space needed TO folder2 FROM folder1 (files in folder1 that folder2 needs)
+                    
+                    // Stats for panel 1 (folder1)
+                    if (biggerFolder === 1) {
+                        // Folder1 is bigger - show "Number of Files in bigger folder" and "Space needed to sync: 0"
+                        document.getElementById('stats1').innerHTML = `
+                            <div class="stats-item">
+                                <span>Number of Files in bigger folder:</span>
+                                <span>${biggerFolderCount}</span>
+                            </div>
+                            <div class="stats-item">
+                                <span>Space needed to sync:</span>
+                                <span>0</span>
+                            </div>
+                        `;
+                    } else {
+                        // Folder1 is smaller - show "Space needed to sync" with actual value
+                        // Space needed to sync files FROM folder2 TO folder1
+                        const spaceNeeded = a.space_needed_folder1 || 0;
+                        document.getElementById('stats1').innerHTML = `
+                            <div class="stats-item">
+                                <span>Space needed to sync:</span>
+                                <span>${formatBytes(spaceNeeded)}</span>
+                            </div>
+                        `;
+                    }
+                    
+                    // Stats for panel 2 (folder2)
+                    if (biggerFolder === 2) {
+                        // Folder2 is bigger - show "Number of Files in bigger folder" and "Space needed to sync: 0"
+                        document.getElementById('stats2').innerHTML = `
+                            <div class="stats-item">
+                                <span>Number of Files in bigger folder:</span>
+                                <span>${biggerFolderCount}</span>
+                            </div>
+                            <div class="stats-item">
+                                <span>Space needed to sync:</span>
+                                <span>0</span>
+                            </div>
+                        `;
+                    } else {
+                        // Folder2 is smaller - show "Space needed to sync" with actual value
+                        // Space needed to sync files FROM folder1 TO folder2
+                        const spaceNeeded = a.space_needed_folder2 || 0;
+                        document.getElementById('stats2').innerHTML = `
+                            <div class="stats-item">
+                                <span>Space needed to sync:</span>
+                                <span>${formatBytes(spaceNeeded)}</span>
+                            </div>
+                        `;
+                    }
                 }
             }
             
@@ -1035,7 +2717,198 @@ async def sync_page():
                 return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
             }
             
-            async function executeSync() {
+            // Confirmation dialog state
+            let confirmResolve = null;
+            let copyAllRemaining = false;
+            let syncAborted = false;
+            
+            function abortSync() {
+                if (!confirm('Are you sure you want to abort the synchronization?')) {
+                    return;
+                }
+                syncAborted = true;
+                if (confirmResolve) {
+                    confirmResolve('abort');
+                    confirmResolve = null;
+                }
+                // Update UI to show aborting
+                const statusTitle = document.getElementById('syncStatusTitle');
+                if (statusTitle) {
+                    statusTitle.textContent = 'Synchronization Aborting...';
+                }
+                const abortBtn = document.getElementById('abortBtn');
+                if (abortBtn) {
+                    abortBtn.disabled = true;
+                    abortBtn.textContent = 'Aborting...';
+                }
+            }
+            
+            function closeSyncStatus() {
+                const statusPanel = document.getElementById('syncStatusPanel');
+                if (statusPanel) {
+                    statusPanel.classList.remove('show');
+                }
+            }
+            
+            function confirmChoice(choice) {
+                const dialog = document.getElementById('confirmDialog');
+                const overlay = document.getElementById('confirmOverlay');
+                const inlineConfirm = document.getElementById('syncStatusConfirm');
+                
+                dialog.classList.remove('show');
+                overlay.classList.remove('show');
+                inlineConfirm.style.display = 'none';
+                
+                if (choice === 'all') {
+                    copyAllRemaining = true;
+                    if (confirmResolve) confirmResolve('yes');
+                } else if (choice === 'abort') {
+                    syncAborted = true;
+                    if (confirmResolve) confirmResolve('abort');
+                } else {
+                    if (confirmResolve) confirmResolve(choice);
+                }
+                confirmResolve = null;
+            }
+            
+            function showConfirmDialog(fileInfo) {
+                return new Promise((resolve) => {
+                    const dialog = document.getElementById('confirmDialog');
+                    const overlay = document.getElementById('confirmOverlay');
+                    const fileInfoDiv = document.getElementById('confirmFileInfo');
+                    const inlineConfirm = document.getElementById('syncStatusConfirm');
+                    const inlineFileInfo = document.getElementById('syncConfirmFileInfo');
+                    
+                    const fileInfoHtml = `
+                        <strong>File:</strong> ${fileInfo.name}
+                        <br><strong>From:</strong> ${fileInfo.source_path}
+                        <br><strong>To:</strong> ${fileInfo.target_path}
+                        <br><strong>Size:</strong> ${formatBytes(fileInfo.size)}
+                    `;
+                    
+                    // Show in both modal dialog and inline panel
+                    fileInfoDiv.innerHTML = fileInfoHtml;
+                    inlineFileInfo.innerHTML = fileInfoHtml;
+                    
+                    confirmResolve = resolve;
+                    dialog.classList.add('show');
+                    overlay.classList.add('show');
+                    inlineConfirm.style.display = 'block';
+                    
+                    // Handle keyboard shortcuts
+                    const handleKeyPress = (e) => {
+                        if (e.key.toLowerCase() === 'y') {
+                            e.preventDefault();
+                            confirmChoice('yes');
+                            document.removeEventListener('keydown', handleKeyPress);
+                        } else if (e.key.toLowerCase() === 'n') {
+                            e.preventDefault();
+                            confirmChoice('no');
+                            document.removeEventListener('keydown', handleKeyPress);
+                        } else if (e.key.toLowerCase() === 'a') {
+                            e.preventDefault();
+                            confirmChoice('all');
+                            document.removeEventListener('keydown', handleKeyPress);
+                        } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            confirmChoice('abort');
+                            document.removeEventListener('keydown', handleKeyPress);
+                        }
+                    };
+                    document.addEventListener('keydown', handleKeyPress);
+                });
+            }
+            
+            function updateSyncStatus(file, current, total, copied, skipped, errors) {
+                const statusPanel = document.getElementById('syncStatusPanel');
+                const statusFile = document.getElementById('syncStatusFile');
+                const statusPath = document.getElementById('syncStatusPath');
+                const statusProgress = document.getElementById('syncStatusProgress');
+                const statCopied = document.getElementById('syncStatCopied');
+                const statSkipped = document.getElementById('syncStatSkipped');
+                const statErrors = document.getElementById('syncStatErrors');
+                const statTotal = document.getElementById('syncStatTotal');
+                
+                statusPanel.classList.add('show');
+                
+                if (file) {
+                    statusFile.textContent = file.name;
+                    statusPath.innerHTML = `
+                        <strong>From:</strong> ${file.source_path}<br>
+                        <strong>To:</strong> ${file.target_path}
+                    `;
+                    statusProgress.textContent = `Copying file ${current} of ${total}...`;
+                } else {
+                    statusFile.textContent = 'Waiting...';
+                    statusPath.textContent = '';
+                    statusProgress.textContent = '';
+                }
+                
+                statCopied.textContent = copied;
+                statSkipped.textContent = skipped;
+                statErrors.textContent = errors;
+                statTotal.textContent = total;
+            }
+            
+            function displayError(fileName, sourcePath, targetPath, errorMsg) {
+                const errorList = document.getElementById('syncErrorList');
+                const errorPanel = document.getElementById('syncStatusErrors');
+                
+                if (!errorList || !errorPanel) return;
+                
+                // Show error panel
+                errorPanel.classList.add('show');
+                
+                // Create error item
+                const errorItem = document.createElement('li');
+                errorItem.className = 'sync-status-error-item';
+                errorItem.innerHTML = `
+                    <strong>${fileName}</strong><br>
+                    <strong>Source:</strong> ${sourcePath}<br>
+                    <strong>Target:</strong> ${targetPath}<br>
+                    <strong>Error:</strong> ${errorMsg}
+                `;
+                
+                // Add to list
+                errorList.appendChild(errorItem);
+                
+                // Scroll to bottom to show latest error
+                errorPanel.scrollTop = errorPanel.scrollHeight;
+            }
+            
+            async function copySingleFile(fileInfo, currentToken) {
+                try {
+                    const response = await fetch('/api/sync/copy-file', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + currentToken
+                        },
+                        body: JSON.stringify({
+                            source_path: fileInfo.source_path,
+                            target_path: fileInfo.target_path,
+                            source_doc_id: fileInfo.id
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    return data;
+                } catch (error) {
+                    return {success: false, error: error.message};
+                }
+            }
+            
+            // Make executeSync globally accessible
+            window.executeSync = async function executeSync() {
+                // Get fresh token from localStorage
+                const currentToken = localStorage.getItem('access_token');
+                
+                if (!currentToken) {
+                    showMessage('Not authenticated. Please login again.', 'error');
+                    window.location.href = '/login';
+                    return;
+                }
+                
                 if (!currentAnalysis || currentAnalysis.type !== 'folder') {
                     showMessage('Please analyze first', 'error');
                     return;
@@ -1049,41 +2922,408 @@ async def sync_page():
                     return;
                 }
                 
-                showMessage('Syncing...', 'info');
+                showMessage('Preparing to sync files...', 'info');
                 document.getElementById('executeBtn').disabled = true;
                 
+                // Reset state
+                copyAllRemaining = false;
+                syncAborted = false;
+                
+                // Show sync status panel
+                const statusPanel = document.getElementById('syncStatusPanel');
+                statusPanel.classList.add('show');
+                
                 try {
-                    const response = await fetch('/api/sync/execute', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({
-                            folder1: folder1,
-                            folder2: folder2,
-                            strategy: strategy,
-                            dry_run: false
-                        })
-                    });
+                    const a = currentAnalysis.analysis;
+                    const filesToCopy = [];
                     
-                    const data = await response.json();
+                    // Build list of files to copy from folder2 to folder1
+                    // Use case-insensitive comparison for folder paths to handle Windows paths correctly
+                    const normalizePathForComparison = (path) => {
+                        // Normalize slashes for comparison (but preserve original for file paths)
+                        const backslashChar = String.fromCharCode(92);
+                        const forwardSlashChar = String.fromCharCode(47);
+                        // Replace all backslashes with forward slashes
+                        return path.split(backslashChar).join(forwardSlashChar).toLowerCase();
+                    };
                     
-                    if (response.ok) {
+                    // Function to check if target file already exists and matches
+                    async function checkTargetFileExists(targetPath, sourceMd5) {
+                        try {
+                            // Check if file exists by making a lightweight API call
+                            const response = await fetch('/api/sync/check-file', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': 'Bearer ' + currentToken
+                                },
+                                body: JSON.stringify({
+                                    target_path: targetPath,
+                                    source_md5: sourceMd5
+                                })
+                            });
+                            const data = await response.json();
+                            return data.exists && (data.matches_by_name || data.matches_by_md5);
+                        } catch (error) {
+                            // If check fails, don't filter - let copy operation handle it
+                            return false;
+                        }
+                    }
+                    
+                    const backslash = String.fromCharCode(92);
+                    if (a.missing_in_folder1 && a.missing_in_folder1.length > 0) {
+                        // Filter files that already exist in target
+                        for (const file of a.missing_in_folder1) {
+                            // Preserve ALL special characters, spaces, etc. in file paths
+                            // Extract relative path by finding folder2 prefix (case-insensitive)
+                            let relPath = file.file_path;
+                            const folder2Lower = normalizePathForComparison(folder2);
+                            const filePathLower = normalizePathForComparison(file.file_path);
+                            
+                            if (filePathLower.startsWith(folder2Lower)) {
+                                // Find the actual character position where folder2 ends in original path
+                                // Use the length of folder2 to find the relative portion
+                                const backslashChar = String.fromCharCode(92);
+                                const forwardSlashChar = String.fromCharCode(47);
+                                const folder2Normalized = folder2.split(backslashChar).join(forwardSlashChar);
+                                const filePathNormalized = file.file_path.split(backslashChar).join(forwardSlashChar);
+                                
+                                // Find the position where folder2 ends (case-insensitive)
+                                let matchPos = -1;
+                                for (let i = 0; i <= file.file_path.length - folder2.length; i++) {
+                                    const substr = file.file_path.substring(i, i + folder2.length);
+                                    if (normalizePathForComparison(substr) === folder2Lower) {
+                                        matchPos = i;
+                                        break;
+                                    }
+                                }
+                                
+                                if (matchPos >= 0) {
+                                    relPath = file.file_path.substring(matchPos + folder2.length);
+                                    // Remove leading slashes/backslashes
+                                    relPath = relPath.replace(/^[\\\\/]+/, '');
+                                }
+                            }
+                            
+                            // Ensure folder1 ends with backslash, then append relative path
+                            // Preserve all special characters in the relative path
+                            const folder1End = folder1.endsWith(backslash) || folder1.endsWith('/') ? '' : backslash;
+                            // Convert forward slashes to backslashes for Windows, but preserve all other characters
+                            const forwardSlash = String.fromCharCode(47);
+                            const relPathNormalized = relPath.split(forwardSlash).join(backslash);
+                            const targetPath = folder1 + folder1End + relPathNormalized;
+                            
+                            // Check if target file already exists and matches (by name or MD5)
+                            const fileExists = await checkTargetFileExists(targetPath, file.md5_hash || null);
+                            if (!fileExists) {
+                                filesToCopy.push({
+                                    ...file,
+                                    source_path: file.file_path,
+                                    target_path: targetPath,
+                                    direction: 'folder2_to_folder1'
+                                });
+                            }
+                        }
+                    }
+                    
+                    // Build list of files to copy from folder1 to folder2
+                    if (a.missing_in_folder2 && a.missing_in_folder2.length > 0) {
+                        // Filter files that already exist in target
+                        for (const file of a.missing_in_folder2) {
+                            // Preserve ALL special characters, spaces, etc. in file paths
+                            // Extract relative path by finding folder1 prefix (case-insensitive)
+                            let relPath = file.file_path;
+                            const folder1Lower = normalizePathForComparison(folder1);
+                            const filePathLower = normalizePathForComparison(file.file_path);
+                            
+                            if (filePathLower.startsWith(folder1Lower)) {
+                                // Find the actual character position where folder1 ends in original path
+                                const backslashChar = String.fromCharCode(92);
+                                const forwardSlashChar = String.fromCharCode(47);
+                                const folder1Normalized = folder1.split(backslashChar).join(forwardSlashChar);
+                                const filePathNormalized = file.file_path.split(backslashChar).join(forwardSlashChar);
+                                
+                                // Find the position where folder1 ends (case-insensitive)
+                                let matchPos = -1;
+                                for (let i = 0; i <= file.file_path.length - folder1.length; i++) {
+                                    const substr = file.file_path.substring(i, i + folder1.length);
+                                    if (normalizePathForComparison(substr) === folder1Lower) {
+                                        matchPos = i;
+                                        break;
+                                    }
+                                }
+                                
+                                if (matchPos >= 0) {
+                                    relPath = file.file_path.substring(matchPos + folder1.length);
+                                    // Remove leading slashes/backslashes
+                                    relPath = relPath.replace(/^[\\\\/]+/, '');
+                                }
+                            }
+                            
+                            // Ensure folder2 ends with backslash, then append relative path
+                            // Preserve all special characters in the relative path
+                            const folder2End = folder2.endsWith(backslash) || folder2.endsWith('/') ? '' : backslash;
+                            // Convert forward slashes to backslashes for Windows, but preserve all other characters
+                            const forwardSlash = String.fromCharCode(47);
+                            const relPathNormalized = relPath.split(forwardSlash).join(backslash);
+                            const targetPath = folder2 + folder2End + relPathNormalized;
+                            
+                            // Check if target file already exists and matches (by name or MD5)
+                            const fileExists = await checkTargetFileExists(targetPath, file.md5_hash || null);
+                            if (!fileExists) {
+                                filesToCopy.push({
+                                    ...file,
+                                    source_path: file.file_path,
+                                    target_path: targetPath,
+                                    direction: 'folder1_to_folder2'
+                                });
+                            }
+                        }
+                    }
+                    
+                    // Handle duplicates (same name, different MD5) - ask user to keep bigger one
+                    if (a.duplicates && a.duplicates.length > 0) {
+                        for (const dup of a.duplicates) {
+                            // Get the largest file from each folder
+                            const doc1 = dup.folder1_docs[0];  // Take first doc from folder1
+                            const doc2 = dup.folder2_docs[0];  // Take first doc from folder2
+                            
+                            // Determine which is bigger
+                            const biggerDoc = doc1.size >= doc2.size ? doc1 : doc2;
+                            const smallerDoc = doc1.size >= doc2.size ? doc2 : doc1;
+                            const biggerFolder = doc1.size >= doc2.size ? folder1 : folder2;
+                            const smallerFolder = doc1.size >= doc2.size ? folder2 : folder1;
+                            
+                            // Ask user which file to keep
+                            const choice = confirm(
+                                `Duplicate file found: ${dup.relative_path}\n` +
+                                `Folder 1 (${folder1}): ${formatBytes(doc1.size)}\n` +
+                                `Folder 2 (${folder2}): ${formatBytes(doc2.size)}\n\n` +
+                                `Keep the larger file (${formatBytes(biggerDoc.size)}) from ${biggerFolder}?\n` +
+                                `OK = Keep larger, Cancel = Skip this file`
+                            );
+                            
+                            if (choice) {
+                                // Keep the larger file - copy it to replace the smaller one
+                                const relPath = dup.relative_path;
+                                const targetPath = smallerFolder + (smallerFolder.endsWith(backslash) || smallerFolder.endsWith('/') ? '' : backslash) + relPath;
+                                
+                                // Check if target file already exists and matches MD5
+                                const fileExists = await checkTargetFileExists(targetPath, biggerDoc.md5_hash || null);
+                                if (!fileExists) {
+                                    filesToCopy.push({
+                                        id: biggerDoc.id,
+                                        name: biggerDoc.name,
+                                        file_path: biggerDoc.file_path,
+                                        size: biggerDoc.size,
+                                        md5_hash: biggerDoc.md5_hash,
+                                        source_path: biggerDoc.file_path,
+                                        target_path: targetPath,
+                                        direction: 'duplicate_replacement',
+                                        is_duplicate: true,
+                                        replacing: smallerDoc.file_path
+                                    });
+                                }
+                            }
+                            // If user cancels, skip this duplicate file
+                        }
+                    }
+                    
+                    if (filesToCopy.length === 0) {
+                        showMessage('No files to sync', 'info');
+                        statusPanel.classList.remove('show');
+                        document.getElementById('executeBtn').disabled = false;
+                        return;
+                    }
+                    
+                    // Initialize status
+                    updateSyncStatus(null, 0, filesToCopy.length, 0, 0, 0);
+                    
+                    // Reset UI elements
+                    let statusTitle = document.getElementById('syncStatusTitle');
+                    let abortBtn = document.getElementById('abortBtn');
+                    let closeBtn = document.getElementById('closeSyncBtn');
+                    if (statusTitle) statusTitle.textContent = 'Synchronization in Progress';
+                    if (abortBtn) {
+                        abortBtn.style.display = 'block';
+                        abortBtn.disabled = false;
+                        abortBtn.textContent = 'Abort';
+                    }
+                    if (closeBtn) {
+                        closeBtn.style.display = 'none';
+                    }
+                    
+                    // Clear previous errors
+                    const errorList = document.getElementById('syncErrorList');
+                    if (errorList) {
+                        errorList.innerHTML = '';
+                    }
+                    const errorPanel = document.getElementById('syncStatusErrors');
+                    if (errorPanel) {
+                        errorPanel.classList.remove('show');
+                    }
+                    
+                    let copiedCount = 0;
+                    let skippedCount = 0;
+                    let errorCount = 0;
+                    const errors = [];
+                    
+                    // Process files one by one
+                    for (let i = 0; i < filesToCopy.length; i++) {
+                        const file = filesToCopy[i];
+                        
+                        // Check if aborted
+                        if (syncAborted) {
+                            updateSyncStatus(null, i, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                            showMessage(`Sync aborted. Copied ${copiedCount} files, skipped ${skippedCount} files.`, 'info');
+                            break;
+                        }
+                        
+                        // Update status with current file
+                        updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                        
+                        // Show confirmation for first 5 files, or if not "copy all"
+                        let shouldCopy = false;
+                        if (i < 5 && !copyAllRemaining) {
+                            const choice = await showConfirmDialog(file);
+                            if (choice === 'abort') {
+                                updateSyncStatus(null, i, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                                showMessage(`Sync aborted. Copied ${copiedCount} files, skipped ${skippedCount} files.`, 'info');
+                                break;
+                            }
+                            shouldCopy = (choice === 'yes');
+                        } else {
+                            // After first 5 files, or if "All" was selected, copy automatically
+                            shouldCopy = true;
+                        }
+                        
+                        if (shouldCopy) {
+                            // Update status to show copying
+                            updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                            
+                            // Check if this is a duplicate replacement - need to delete the old file first
+                            if (file.is_duplicate && file.replacing) {
+                                // Delete the old file before copying the new one
+                                try {
+                                    const deleteResponse = await fetch('/api/sync/delete-file', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': 'Bearer ' + currentToken
+                                        },
+                                        body: JSON.stringify({
+                                            file_path: file.replacing
+                                        })
+                                    });
+                                    const deleteResult = await deleteResponse.json();
+                                    if (!deleteResult.success) {
+                                        errorCount++;
+                                        const errorMsg = `Could not delete old file: ${deleteResult.error}`;
+                                        errors.push({
+                                            file: file.name,
+                                            source: file.source_path,
+                                            target: file.target_path,
+                                            error: errorMsg
+                                        });
+                                        displayError(file.name, file.source_path, file.target_path, errorMsg);
+                                        updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                                        continue;  // Skip copying if deletion failed
+                                    }
+                                } catch (error) {
+                                    errorCount++;
+                                    const errorMsg = `Error deleting old file: ${error.message}`;
+                                    errors.push({
+                                        file: file.name,
+                                        source: file.source_path,
+                                        target: file.target_path,
+                                        error: errorMsg
+                                    });
+                                    displayError(file.name, file.source_path, file.target_path, errorMsg);
+                                    updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                                    continue;  // Skip copying if deletion failed
+                                }
+                            }
+                            
+                            showMessage(`Copying ${file.name} (${i + 1}/${filesToCopy.length})...`, 'info');
+                            
+                            const result = await copySingleFile(file, currentToken);
+                            
+                            if (result.success) {
+                                if (result.skipped) {
+                                    // File already exists with same content - count as skipped
+                                    skippedCount++;
+                                    showMessage(`${file.name} already exists with same content - skipped`, 'info');
+                                } else {
+                                    copiedCount++;
+                                }
+                            } else {
+                                errorCount++;
+                                const errorMsg = result.error || 'Unknown error';
+                                errors.push({
+                                    file: file.name,
+                                    source: file.source_path,
+                                    target: file.target_path,
+                                    error: errorMsg
+                                });
+                                // Display error immediately in the error list
+                                displayError(file.name, file.source_path, file.target_path, errorMsg);
+                            }
+                            
+                            // Update status after copy
+                            updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                        } else {
+                            skippedCount++;
+                            updateSyncStatus(file, i + 1, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                        }
+                    }
+                    
+                    // Show final status
+                    updateSyncStatus(null, filesToCopy.length, filesToCopy.length, copiedCount, skippedCount, errorCount);
+                    
+                    // Update header to show completion
+                    statusTitle = document.getElementById('syncStatusTitle');
+                    abortBtn = document.getElementById('abortBtn');
+                    closeBtn = document.getElementById('closeSyncBtn');
+                    
+                    if (syncAborted) {
+                        if (statusTitle) statusTitle.textContent = 'Synchronization Aborted';
+                        showMessage(`Sync aborted. Copied ${copiedCount} files, skipped ${skippedCount} files.`, 'info');
+                    } else {
+                        if (statusTitle) statusTitle.textContent = 'Synchronization Complete';
                         showMessage(
-                            `Sync complete! Copied ${data.copied_to_folder1} to folder1, ` +
-                            `${data.copied_to_folder2} to folder2, ` +
-                            `resolved ${data.resolved_duplicates} duplicates.`,
+                            `Sync complete! Copied ${copiedCount} files, skipped ${skippedCount} files.`,
                             'success'
                         );
-                        if (data.errors && data.errors.length > 0) {
-                            showMessage('Errors: ' + data.errors.join(', '), 'error');
+                        if (errorCount > 0) {
+                            showMessage(`Errors: ${errorCount} files failed. See error details below.`, 'error');
+                            // Show error panel if it's hidden
+                            const errorPanel = document.getElementById('syncStatusErrors');
+                            if (errorPanel) {
+                                errorPanel.classList.add('show');
+                            }
                         }
-                    } else {
-                        showMessage('Sync failed: ' + (data.detail || 'Unknown error'), 'error');
+                    }
+                    
+                    // Hide abort button and show close button
+                    if (abortBtn) {
+                        abortBtn.style.display = 'none';
+                    }
+                    if (closeBtn) {
+                        closeBtn.style.display = 'block';
+                    }
+                    
+                    // Update status to show completion
+                    const statusFile = document.getElementById('syncStatusFile');
+                    const statusProgress = document.getElementById('syncStatusProgress');
+                    if (statusFile) {
+                        statusFile.textContent = syncAborted ? 'Sync aborted' : 'Sync complete';
+                    }
+                    if (statusProgress) {
+                        statusProgress.textContent = `Completed: ${copiedCount} copied, ${skippedCount} skipped, ${errorCount} errors`;
                     }
                 } catch (error) {
                     showMessage('Error: ' + error.message, 'error');
+                    statusPanel.classList.remove('show');
                 } finally {
                     document.getElementById('executeBtn').disabled = false;
                 }
@@ -1096,11 +3336,15 @@ async def sync_page():
                 msg.textContent = text;
                 messages.appendChild(msg);
                 
-                setTimeout(() => {
-                    msg.remove();
-                }, 5000);
+                // Keep errors visible until user navigates away; auto-hide others
+                if (type !== 'error') {
+                    setTimeout(() => {
+                        msg.remove();
+                    }, 5000);
+                }
             }
         </script>
     </body>
     </html>
     """
+
