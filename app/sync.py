@@ -12,6 +12,51 @@ from app.database import Document, SessionLocal
 from app.file_scanner import scan_drive, calculate_md5
 
 
+def format_file_info(doc: Document, include_full_path: bool = False) -> str:
+    """
+    Format file information with size, dates, and MD5.
+    
+    Args:
+        doc: Document object
+        include_full_path: Whether to include full file path
+        
+    Returns:
+        Formatted string with file info
+    """
+    file_name = doc.file_path if include_full_path else os.path.basename(doc.file_path)
+    
+    # Format size
+    if doc.size >= 1024 * 1024:
+        size_str = f"{doc.size / (1024 * 1024):.2f} MB"
+    elif doc.size >= 1024:
+        size_str = f"{doc.size / 1024:.2f} KB"
+    else:
+        size_str = f"{doc.size} bytes"
+    
+    # Format dates
+    created_str = "N/A"
+    if doc.date_created:
+        created_str = doc.date_created.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get modified date from file system
+    modified_str = "N/A"
+    try:
+        if os.path.exists(doc.file_path):
+            mtime = os.path.getmtime(doc.file_path)
+            modified_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    
+    # Format MD5
+    md5_str = doc.md5_hash[:16] + "..." if doc.md5_hash else "N/A"
+    
+    return (
+        f"{file_name} | Size: {size_str} | "
+        f"Created: {created_str} | Modified: {modified_str} | "
+        f"MD5: {md5_str}"
+    )
+
+
 def analyze_drive_sync(drive1: str, drive2: str) -> Dict:
     """
     Analyze what files need to be synced between two drives.
@@ -399,6 +444,56 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
         # Emit initial progress
         emit_progress("starting", {"file": "Starting analysis..."})
         
+        # Clean up database records for files that no longer exist in both folders
+        # This should happen before scanning to ensure no mirage records
+        try:
+            # Normalize folder paths
+            folder1_normalized = os.path.abspath(folder1)
+            if folder1_normalized and len(folder1_normalized) >= 2 and folder1_normalized[1] == ':':
+                folder1_normalized = folder1_normalized[0].upper() + folder1_normalized[1:]
+            
+            folder2_normalized = os.path.abspath(folder2)
+            if folder2_normalized and len(folder2_normalized) >= 2 and folder2_normalized[1] == ':':
+                folder2_normalized = folder2_normalized[0].upper() + folder2_normalized[1:]
+            
+            # Get all documents in both folders
+            docs_to_cleanup = db.query(Document).filter(
+                (Document.file_path.like(f"{folder1_normalized}%")) |
+                (Document.file_path.like(f"{folder2_normalized}%"))
+            ).all()
+            
+            # Remove database entries for files that no longer exist on disk
+            deleted_count = 0
+            for doc in docs_to_cleanup:
+                if not os.path.exists(doc.file_path):
+                    try:
+                        db.delete(doc)
+                        deleted_count += 1
+                    except Exception:
+                        # Silently handle database errors - don't show to user
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+                        continue
+            
+            # Commit all deletions in a single transaction
+            if deleted_count > 0:
+                try:
+                    db.commit()
+                    print(f"[DEBUG] Cleaned up {deleted_count} stale database records")
+                except Exception:
+                    # Silently handle database errors - don't show to user
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Silently handle database errors - don't show to user
+            # Log but don't fail the analysis
+            import logging
+            logging.warning(f"Database cleanup error during folder scan: {str(e)}")
+        
         # Scan folder1 and index/update files
         try:
             if progress_callback:
@@ -466,14 +561,53 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
             print(f"Warning: Could not scan folder2: {e}")
         
         # Get documents from folder1 (after refresh)
-        docs_folder1 = db.query(Document).filter(
-            Document.file_path.like(f"{folder1}%")
+        # Normalize folder paths for query
+        folder1_normalized = os.path.abspath(folder1)
+        if folder1_normalized and len(folder1_normalized) >= 2 and folder1_normalized[1] == ':':
+            folder1_normalized = folder1_normalized[0].upper() + folder1_normalized[1:]
+        
+        folder2_normalized = os.path.abspath(folder2)
+        if folder2_normalized and len(folder2_normalized) >= 2 and folder2_normalized[1] == ':':
+            folder2_normalized = folder2_normalized[0].upper() + folder2_normalized[1:]
+        
+        docs_folder1_all = db.query(Document).filter(
+            Document.file_path.like(f"{folder1_normalized}%")
         ).all()
         
         # Get documents from folder2 (after refresh)
-        docs_folder2 = db.query(Document).filter(
-            Document.file_path.like(f"{folder2}%")
+        docs_folder2_all = db.query(Document).filter(
+            Document.file_path.like(f"{folder2_normalized}%")
         ).all()
+        
+        # Final cleanup: Remove database entries for files that no longer exist on disk
+        # This is a safety check to ensure no mirage records remain
+        deleted_docs = []
+        for doc in docs_folder1_all + docs_folder2_all:
+            if not os.path.exists(doc.file_path):
+                deleted_docs.append(doc)
+        
+        # Delete all non-existent documents in a single transaction
+        if deleted_docs:
+            try:
+                for doc in deleted_docs:
+                    db.delete(doc)
+                db.commit()
+                if deleted_docs:
+                    print(f"[DEBUG] Final cleanup: Removed {len(deleted_docs)} stale database records")
+            except Exception as e:
+                # Rollback the transaction if it failed
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                # Silently handle database errors - don't show to user
+                import logging
+                logging.warning(f"Database cleanup error: {str(e)}")
+        
+        # Filter out documents for files that no longer exist on disk
+        # This ensures the analysis only includes files that actually exist
+        docs_folder1 = [doc for doc in docs_folder1_all if os.path.exists(doc.file_path)]
+        docs_folder2 = [doc for doc in docs_folder2_all if os.path.exists(doc.file_path)]
         
         # Group by filename (with extension) and MD5
         # Matching rule: files match if filename is the same and MD5 is the same
@@ -602,11 +736,21 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
                             )
                     except Exception:
                         pass
-                # Build file info with MD5 for progress display
-                file_info = f"{name_key}"
+                # Build file info with size, dates, and MD5 for progress display
+                file_info_parts = []
                 if docs1_list:
-                    md5_list = [d.md5_hash[:16] + "..." for d in docs1_list[:3]]  # Show first 3 MD5s
-                    file_info += f" | folder1 MD5: {', '.join(md5_list)}"
+                    # Show info for first file (or aggregate if multiple)
+                    if len(docs1_list) == 1:
+                        file_info_parts.append(f"folder1: {format_file_info(docs1_list[0])}")
+                    else:
+                        file_info_parts.append(
+                            f"{name_key} | folder1: {len(docs1_list)} files"
+                        )
+                        # Show first file's details
+                        file_info_parts.append(
+                            f"  First: {format_file_info(docs1_list[0])}"
+                        )
+                file_info = " | ".join(file_info_parts) if file_info_parts else name_key
                 emit_progress("compare", {
                     "file": file_info,
                     "scanned": equals_by_name_count + uniques_count,
@@ -624,11 +768,21 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
                         print(f"[DEBUG] name-only in folder2: '{name_key}' count2={len(docs2_list)}")
                     except Exception:
                         pass
-                # Build file info with MD5 for progress display
-                file_info = f"{name_key}"
+                # Build file info with size, dates, and MD5 for progress display
+                file_info_parts = []
                 if docs2_list:
-                    md5_list = [d.md5_hash[:16] + "..." for d in docs2_list[:3]]  # Show first 3 MD5s
-                    file_info += f" | folder2 MD5: {', '.join(md5_list)}"
+                    # Show info for first file (or aggregate if multiple)
+                    if len(docs2_list) == 1:
+                        file_info_parts.append(f"folder2: {format_file_info(docs2_list[0])}")
+                    else:
+                        file_info_parts.append(
+                            f"{name_key} | folder2: {len(docs2_list)} files"
+                        )
+                        # Show first file's details
+                        file_info_parts.append(
+                            f"  First: {format_file_info(docs2_list[0])}"
+                        )
+                file_info = " | ".join(file_info_parts) if file_info_parts else name_key
                 emit_progress("compare", {
                     "file": file_info,
                     "scanned": equals_by_name_count + uniques_count,
@@ -745,14 +899,43 @@ def analyze_folder_sync(folder1: str, folder2: str, progress_callback=None) -> D
                             )
                     except Exception:
                         pass
-                # Build file info with MD5 from both folders for progress display
-                file_info = f"{name_key}"
-                if docs1_list:
-                    md5_list_f1 = [d.md5_hash[:16] + "..." for d in docs1_list[:2]]  # Show first 2 MD5s
-                    file_info += f" | folder1 MD5: {', '.join(md5_list_f1)}"
-                if docs2_list:
-                    md5_list_f2 = [d.md5_hash[:16] + "..." for d in docs2_list[:2]]  # Show first 2 MD5s
-                    file_info += f" | folder2 MD5: {', '.join(md5_list_f2)}"
+                # Build file info with size, dates, and MD5 for unmatched files
+                file_info_parts = [f"{name_key}"]
+                
+                # Show info for unmatched files that need sync
+                if unmatched_f1:
+                    if len(unmatched_f1) == 1:
+                        file_info_parts.append(
+                            f"folder1 (needs sync): {format_file_info(unmatched_f1[0])}"
+                        )
+                    else:
+                        file_info_parts.append(
+                            f"folder1: {len(unmatched_f1)} files need sync"
+                        )
+                        if unmatched_f1:
+                            file_info_parts.append(
+                                f"  First: {format_file_info(unmatched_f1[0])}"
+                            )
+                
+                if unmatched_f2:
+                    if len(unmatched_f2) == 1:
+                        file_info_parts.append(
+                            f"folder2 (needs sync): {format_file_info(unmatched_f2[0])}"
+                        )
+                    else:
+                        file_info_parts.append(
+                            f"folder2: {len(unmatched_f2)} files need sync"
+                        )
+                        if unmatched_f2:
+                            file_info_parts.append(
+                                f"  First: {format_file_info(unmatched_f2[0])}"
+                            )
+                
+                # If no unmatched files, show matched info
+                if not unmatched_f1 and not unmatched_f2 and exact_here > 0:
+                    file_info_parts.append(f"✓ {exact_here} exact match(es) - no sync needed")
+                
+                file_info = " | ".join(file_info_parts)
                 emit_progress("compare", {
                     "file": file_info,
                     "scanned": scanned_disp,

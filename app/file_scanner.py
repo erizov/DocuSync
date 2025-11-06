@@ -140,6 +140,48 @@ def index_document(file_path: str,
         from app.database import SessionLocal
         db = SessionLocal()
         try:
+            # Clean up stale database records for files in the same directory that no longer exist
+            # This ensures no mirage database records - reconcile automatically during scanning
+            try:
+                file_dir = os.path.dirname(file_path)
+                if file_dir:
+                    # Get all documents in the same directory
+                    docs_in_dir = db.query(Document).filter(
+                        Document.directory == file_dir
+                    ).all()
+                    
+                    # Remove records for files that no longer exist
+                    deleted_count = 0
+                    for doc in docs_in_dir:
+                        if not os.path.exists(doc.file_path):
+                            try:
+                                db.delete(doc)
+                                deleted_count += 1
+                            except Exception:
+                                # Silently handle database errors - don't show to user
+                                try:
+                                    db.rollback()
+                                except Exception:
+                                    pass
+                                continue
+                    
+                    # Commit cleanup if any deletions were made
+                    if deleted_count > 0:
+                        try:
+                            db.commit()
+                        except Exception:
+                            # Silently handle database errors - don't show to user
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+            except Exception:
+                # Silently handle cleanup errors - don't fail indexing
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            
             existing = db.query(Document).filter(
                 Document.file_path == file_path
             ).first()
