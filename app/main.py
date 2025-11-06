@@ -2813,6 +2813,83 @@ async def sync_page():
                     if (options[1]) options[1].textContent = t.keepNewest;
                     if (options[2]) options[2].textContent = t.keepLargest;
                 }
+                
+                // Update stats labels if analysis is already displayed
+                const stats1 = document.getElementById('stats1');
+                const stats2 = document.getElementById('stats2');
+                
+                if (stats1 && stats1.innerHTML) {
+                    // Parse and update stats1
+                    const stats1HTML = stats1.innerHTML;
+                    const stats1Div = stats1;
+                    const statsItems = stats1Div.querySelectorAll('.stats-item');
+                    statsItems.forEach(item => {
+                        const span = item.querySelector('span:first-child');
+                        if (span) {
+                            const text = span.textContent.trim();
+                            // Check if it's a stats label that needs translation
+                            if (text.includes('Number of Files in bigger folder') || 
+                                text.includes('Anzahl der Dateien') ||
+                                text.includes('Nombre de fichiers') ||
+                                text.includes('Número de archivos') ||
+                                text.includes('Numero di file') ||
+                                text.includes('Количество файлов')) {
+                                span.textContent = t.numberOfFilesInBiggerFolder + ':';
+                            } else if (text.includes('Space needed to sync') || 
+                                      text.includes('Benötigter Speicherplatz') ||
+                                      text.includes('Espace nécessaire') ||
+                                      text.includes('Espacio necesario') ||
+                                      text.includes('Spazio necessario') ||
+                                      text.includes('Необходимое место')) {
+                                span.textContent = t.spaceNeededToSync + ':';
+                            }
+                        }
+                    });
+                }
+                
+                if (stats2 && stats2.innerHTML) {
+                    // Parse and update stats2
+                    const stats2Div = stats2;
+                    const statsItems = stats2Div.querySelectorAll('.stats-item');
+                    statsItems.forEach(item => {
+                        const span = item.querySelector('span:first-child');
+                        if (span) {
+                            const text = span.textContent.trim();
+                            // Check if it's a stats label that needs translation
+                            if (text.includes('Number of Files in bigger folder') || 
+                                text.includes('Anzahl der Dateien') ||
+                                text.includes('Nombre de fichiers') ||
+                                text.includes('Número de archivos') ||
+                                text.includes('Numero di file') ||
+                                text.includes('Количество файлов')) {
+                                span.textContent = t.numberOfFilesInBiggerFolder + ':';
+                            } else if (text.includes('Space needed to sync') || 
+                                      text.includes('Benötigter Speicherplatz') ||
+                                      text.includes('Espace nécessaire') ||
+                                      text.includes('Espacio necesario') ||
+                                      text.includes('Spazio necessario') ||
+                                      text.includes('Необходимое место')) {
+                                span.textContent = t.spaceNeededToSync + ':';
+                            }
+                        }
+                    });
+                }
+                
+                // Update duplicates headers if they exist
+                const duplicatesHeaders = document.querySelectorAll('.panel-content > div');
+                duplicatesHeaders.forEach(header => {
+                    const text = header.textContent;
+                    if ((text.includes('Duplicates') || text.includes('Duplikate') || 
+                         text.includes('Doublons') || text.includes('Duplicados') || 
+                         text.includes('Duplicati') || text.includes('Дубликаты')) &&
+                        text.includes('(') && text.includes(')')) {
+                        // Extract count from header
+                        const match = text.match(/\((\d+)\)/);
+                        if (match) {
+                            header.textContent = `${t.duplicates} (${match[1]}):`;
+                        }
+                    }
+                });
             }
             
             // Initialize language when DOM is ready
