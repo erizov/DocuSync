@@ -39,12 +39,79 @@ DocuSync is a powerful yet simple document management system that helps you orga
 - **Duplicate Detection**: Identifies files with same name but different content
 - **Dry-Run Mode**: Preview sync operations before executing
 - **Path Mapping**: Specify custom target folders when exact paths don't exist
+- **Tree Structure Preservation**: Maintains subfolder hierarchy when syncing (e.g., `sub1\sub2\file.pdf` in folder1 matches `sub1\sub2\file.pdf` in folder2)
 
 ### 🗄️ Database Storage
 - **SQLite Database**: Fast, local, no server required
 - **Indexed Queries**: Optimized indexes for quick searches
 - **Text Content Storage**: Optional storage of extracted text for faster searching
 - **Metadata Preservation**: All document information in one place
+
+## File Comparison Algorithm
+
+DocuSync uses a sophisticated multi-phase algorithm to compare files between two folders while preserving the folder tree structure:
+
+### Phase 1: Grouping by Relative Path
+
+1. **Calculate Relative Paths**: For each file, compute its relative path from the base folder
+   - Example: `D:\books\sub1\sub2\file.pdf` → relative path: `sub1\sub2\file.pdf`
+   - This preserves the folder tree structure
+
+2. **Build Dictionaries**: Create two dictionaries mapping `{relative_path: [documents]}` for each folder
+
+### Phase 2: Comparison by Relative Path
+
+For each relative path found in either folder, the algorithm determines one of three cases:
+
+#### Case 1: File Exists Only in Folder1
+- **Action**: File needs to be copied to folder2
+- **Status**: Added to `missing_in_folder2` list
+- **Note**: Also checks if the MD5 hash exists elsewhere in folder2 (possible rename)
+
+#### Case 2: File Exists Only in Folder2
+- **Action**: File needs to be copied to folder1
+- **Status**: Added to `missing_in_folder1` list
+
+#### Case 3: Same Relative Path Exists in Both Folders
+- **Step 1**: Group files by MD5 hash within each folder
+- **Step 2**: Match pairs by MD5 (same relative path + same MD5 = exact match)
+  - These are **exact matches** - no sync needed ✓
+- **Step 3**: Collect unmatched files (same relative path, different MD5)
+  - These are **partial matches** (duplicates) - user decision needed
+  - Example: `sub1\file.pdf` with MD5 `A` in folder1 vs `sub1\file.pdf` with MD5 `B` in folder2
+
+### Phase 3: Cross-Path MD5 Matching (Suspected Duplicates)
+
+- **Purpose**: Detect files with same content but different locations (possible rename/move)
+- **Method**: Find files with same MD5 hash but different relative paths
+- **Condition**: Only flagged if relative paths don't intersect (different locations)
+- **Exclusion**: MD5s already matched by relative path are excluded
+
+### Matching Rules Summary
+
+| Condition | Relative Path | MD5 Hash | Result |
+|-----------|--------------|----------|--------|
+| ✓ | Same | Same | **Exact Match** - No sync needed |
+| ⚠️ | Same | Different | **Partial Match** - Duplicate, needs decision |
+| ➕ | Different | Different | **Unique File** - Needs sync |
+| 🔍 | Different | Same | **Suspected Duplicate** - Possible rename |
+
+### Example
+
+```
+Folder1:                    Folder2:
+├─ sub1\file.pdf (MD5: A)   ├─ sub1\file.pdf (MD5: A)  → Exact match ✓
+├─ sub1\file.pdf (MD5: B)   ├─ sub1\file.pdf (MD5: C)  → Partial match (duplicate)
+├─ sub2\doc.pdf (MD5: D)   └─ sub3\doc.pdf (MD5: D)   → Suspected duplicate
+└─ sub3\new.pdf (MD5: E)                                → Unique to folder1
+```
+
+### Key Features
+
+- **Tree Structure Preservation**: Files are matched by their relative path within the folder structure, not just filename
+- **Subfolder Support**: If `folder1` has `subfolder1\file.pdf`, it compares to `folder2\subfolder1\file.pdf`
+- **Display Format**: Shows full relative path like `sub1\sub2\sub3\filename.pdf` (without base folder name)
+- **MD5 Verification**: Ensures content integrity when matching files
 
 ## Installation
 
