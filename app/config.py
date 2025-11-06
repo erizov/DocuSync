@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///docu_sync.db"
     max_file_size_mb: int = 100
     supported_extensions: list[str] = [
-        ".pdf", ".docx", ".txt", ".epub"
+        ".pdf", ".docx", ".txt", ".epub", ".djvu", ".zip", ".doc", ".rar",
+        ".fb2", ".html", ".rtf", ".gif", ".ppt", ".mp3"
     ]
     enable_fulltext_search: bool = True
     chunk_size: int = 8192

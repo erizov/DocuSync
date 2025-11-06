@@ -8,7 +8,7 @@ DocuSync is a powerful yet simple document management system that helps you orga
 
 ### 📚 Document Discovery
 - **Multi-Drive Scanning**: Automatically scan all drives or specific drives for documents
-- **Multiple Formats**: Support for PDF, DOCX, TXT, and EPUB files
+- **Multiple Formats**: Support for PDF, DOCX, TXT, EPUB, DJVU, ZIP, DOC, RAR, FB2, HTML, RTF, GIF, PPT, and MP3 files
 - **Metadata Extraction**: Captures document name, path, author, size, creation date, and more
 - **MD5 Hash Calculation**: Unique identification for duplicate detection
 

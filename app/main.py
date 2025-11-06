@@ -2069,6 +2069,29 @@ async def sync_page():
                 color: #333;
                 margin-bottom: 10px;
             }
+            .header-top {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 10px;
+            }
+            .language-selector {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+            .language-selector label {
+                font-weight: 500;
+                font-size: 14px;
+            }
+            .language-selector select {
+                padding: 6px 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                font-size: 14px;
+                background: white;
+                cursor: pointer;
+            }
             .controls {
                 background: white;
                 padding: 20px;
@@ -2477,7 +2500,20 @@ async def sync_page():
     </head>
     <body>
         <div class="header">
-            <h1>DocuSync - Folder Synchronization</h1>
+            <div class="header-top">
+                <h1>DocuSync - Folder Synchronization</h1>
+                <div class="language-selector">
+                    <label for="languageSelect">Language:</label>
+                    <select id="languageSelect">
+                        <option value="en">English</option>
+                        <option value="de">German</option>
+                        <option value="fr">French</option>
+                        <option value="es">Spanish</option>
+                        <option value="it">Italian</option>
+                        <option value="ru">Russian</option>
+                    </select>
+                </div>
+            </div>
             <p>Compare and sync files between two folders or drives</p>
         </div>
         
@@ -2594,6 +2630,197 @@ async def sync_page():
         </div>
         
         <script>
+            // Language support
+            const translations = {
+                en: {
+                    title: 'DocuSync - Folder Synchronization',
+                    subtitle: 'Compare and sync files between two folders or drives',
+                    folder1: 'Folder 1:',
+                    folder2: 'Folder 2:',
+                    syncStrategy: 'Sync Strategy:',
+                    keepBoth: 'Keep Both',
+                    keepNewest: 'Keep Newest',
+                    keepLargest: 'Keep Largest',
+                    analyze: 'Analyze',
+                    executeSync: 'Execute Sync',
+                    browse: 'Browse',
+                    language: 'Language:'
+                },
+                de: {
+                    title: 'DocuSync - Ordner-Synchronisation',
+                    subtitle: 'Dateien zwischen zwei Ordnern oder Laufwerken vergleichen und synchronisieren',
+                    folder1: 'Ordner 1:',
+                    folder2: 'Ordner 2:',
+                    syncStrategy: 'Synchronisationsstrategie:',
+                    keepBoth: 'Beide behalten',
+                    keepNewest: 'Neueste behalten',
+                    keepLargest: 'Größte behalten',
+                    analyze: 'Analysieren',
+                    executeSync: 'Synchronisation ausführen',
+                    browse: 'Durchsuchen',
+                    language: 'Sprache:'
+                },
+                fr: {
+                    title: 'DocuSync - Synchronisation de dossiers',
+                    subtitle: 'Comparer et synchroniser les fichiers entre deux dossiers ou lecteurs',
+                    folder1: 'Dossier 1:',
+                    folder2: 'Dossier 2:',
+                    syncStrategy: 'Stratégie de synchronisation:',
+                    keepBoth: 'Garder les deux',
+                    keepNewest: 'Garder le plus récent',
+                    keepLargest: 'Garder le plus grand',
+                    analyze: 'Analyser',
+                    executeSync: 'Exécuter la synchronisation',
+                    browse: 'Parcourir',
+                    language: 'Langue:'
+                },
+                es: {
+                    title: 'DocuSync - Sincronización de carpetas',
+                    subtitle: 'Comparar y sincronizar archivos entre dos carpetas o unidades',
+                    folder1: 'Carpeta 1:',
+                    folder2: 'Carpeta 2:',
+                    syncStrategy: 'Estrategia de sincronización:',
+                    keepBoth: 'Mantener ambos',
+                    keepNewest: 'Mantener el más reciente',
+                    keepLargest: 'Mantener el más grande',
+                    analyze: 'Analizar',
+                    executeSync: 'Ejecutar sincronización',
+                    browse: 'Examinar',
+                    language: 'Idioma:'
+                },
+                it: {
+                    title: 'DocuSync - Sincronizzazione cartelle',
+                    subtitle: 'Confronta e sincronizza file tra due cartelle o unità',
+                    folder1: 'Cartella 1:',
+                    folder2: 'Cartella 2:',
+                    syncStrategy: 'Strategia di sincronizzazione:',
+                    keepBoth: 'Mantieni entrambi',
+                    keepNewest: 'Mantieni il più recente',
+                    keepLargest: 'Mantieni il più grande',
+                    analyze: 'Analizza',
+                    executeSync: 'Esegui sincronizzazione',
+                    browse: 'Sfoglia',
+                    language: 'Lingua:'
+                },
+                ru: {
+                    title: 'DocuSync - Синхронизация папок',
+                    subtitle: 'Сравнение и синхронизация файлов между двумя папками или дисками',
+                    folder1: 'Папка 1:',
+                    folder2: 'Папка 2:',
+                    syncStrategy: 'Стратегия синхронизации:',
+                    keepBoth: 'Сохранить оба',
+                    keepNewest: 'Сохранить самый новый',
+                    keepLargest: 'Сохранить самый большой',
+                    analyze: 'Анализировать',
+                    executeSync: 'Выполнить синхронизацию',
+                    browse: 'Обзор',
+                    language: 'Язык:'
+                }
+            };
+            
+            // Detect user's language from browser
+            function detectUserLanguage() {
+                // Check localStorage first
+                const savedLang = localStorage.getItem('docuSync_language');
+                if (savedLang && translations[savedLang]) {
+                    return savedLang;
+                }
+                
+                // Detect from browser
+                const browserLang = navigator.language || navigator.userLanguage;
+                const langCode = browserLang.split('-')[0].toLowerCase();
+                
+                // Map browser language to supported languages
+                const langMap = {
+                    'en': 'en',
+                    'de': 'de',
+                    'fr': 'fr',
+                    'es': 'es',
+                    'it': 'it',
+                    'ru': 'ru'
+                };
+                
+                return langMap[langCode] || 'en'; // Default to English
+            }
+            
+            // Apply translations
+            function applyTranslations(lang) {
+                const t = translations[lang] || translations.en;
+                
+                // Update title
+                const h1 = document.querySelector('.header h1');
+                if (h1) h1.textContent = t.title;
+                
+                // Update subtitle
+                const p = document.querySelector('.header p');
+                if (p) p.textContent = t.subtitle;
+                
+                // Update labels
+                const labels = document.querySelectorAll('.controls-row label');
+                labels.forEach(label => {
+                    const text = label.textContent.trim();
+                    if (text.includes('Folder 1') || text.includes('Ordner 1') || text.includes('Dossier 1') || text.includes('Carpeta 1') || text.includes('Cartella 1') || text.includes('Папка 1')) {
+                        label.textContent = t.folder1;
+                    } else if (text.includes('Folder 2') || text.includes('Ordner 2') || text.includes('Dossier 2') || text.includes('Carpeta 2') || text.includes('Cartella 2') || text.includes('Папка 2')) {
+                        label.textContent = t.folder2;
+                    } else if (text.includes('Sync Strategy') || text.includes('Synchronisationsstrategie') || text.includes('Stratégie') || text.includes('Estrategia') || text.includes('Strategia') || text.includes('Стратегия')) {
+                        label.textContent = t.syncStrategy;
+                    }
+                });
+                
+                // Update language selector label
+                const langLabel = document.querySelector('.language-selector label');
+                if (langLabel) langLabel.textContent = t.language;
+                
+                // Update buttons
+                const analyzeBtn = document.getElementById('analyzeBtn');
+                if (analyzeBtn) analyzeBtn.textContent = t.analyze;
+                
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) executeBtn.textContent = t.executeSync;
+                
+                // Update browse buttons
+                const browseBtns = document.querySelectorAll('.browse-btn');
+                browseBtns.forEach(btn => {
+                    if (btn.textContent.includes('Browse') || btn.textContent.includes('Durchsuchen') || btn.textContent.includes('Parcourir') || btn.textContent.includes('Examinar') || btn.textContent.includes('Sfoglia') || btn.textContent.includes('Обзор')) {
+                        btn.textContent = t.browse;
+                    }
+                });
+                
+                // Update select options
+                const strategySelect = document.getElementById('strategy');
+                if (strategySelect) {
+                    const options = strategySelect.options;
+                    if (options[0]) options[0].textContent = t.keepBoth;
+                    if (options[1]) options[1].textContent = t.keepNewest;
+                    if (options[2]) options[2].textContent = t.keepLargest;
+                }
+            }
+            
+            // Initialize language when DOM is ready
+            let currentLanguage = detectUserLanguage();
+            
+            function initializeLanguage() {
+                const languageSelect = document.getElementById('languageSelect');
+                if (languageSelect) {
+                    languageSelect.value = currentLanguage;
+                    languageSelect.addEventListener('change', function() {
+                        currentLanguage = this.value;
+                        localStorage.setItem('docuSync_language', currentLanguage);
+                        applyTranslations(currentLanguage);
+                    });
+                }
+                applyTranslations(currentLanguage);
+            }
+            
+            // Apply translations on page load
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initializeLanguage);
+            } else {
+                // DOM is already ready
+                initializeLanguage();
+            }
+            
             let currentAnalysis = null;
             let token = localStorage.getItem('access_token');
             let currentFolderInput = null;
@@ -4031,7 +4258,7 @@ async def sync_page():
                     const isIdentical = totalMissing1 === 0 && totalMissing2 === 0 && totalDuplicates === 0;
                     
                     // Supported file types
-                    const supportedTypes = ['.pdf', '.docx', '.txt', '.epub'];
+                    const supportedTypes = ['.pdf', '.docx', '.txt', '.epub', '.djvu', '.zip', '.doc', '.rar', '.fb2', '.html', '.rtf', '.gif', '.ppt', '.mp3'];
                     const typesList = supportedTypes.join(', ');
                     
                     if (isIdentical) {
