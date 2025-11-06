@@ -2644,7 +2644,10 @@ async def sync_page():
                     analyze: 'Analyze',
                     executeSync: 'Execute Sync',
                     browse: 'Browse',
-                    language: 'Language:'
+                    language: 'Language:',
+                    numberOfFilesInBiggerFolder: 'Number of Files in bigger folder',
+                    spaceNeededToSync: 'Space needed to sync',
+                    duplicates: 'Duplicates'
                 },
                 de: {
                     title: 'DocuSync - Ordner-Synchronisation',
@@ -2658,7 +2661,10 @@ async def sync_page():
                     analyze: 'Analysieren',
                     executeSync: 'Synchronisation ausführen',
                     browse: 'Durchsuchen',
-                    language: 'Sprache:'
+                    language: 'Sprache:',
+                    numberOfFilesInBiggerFolder: 'Anzahl der Dateien im größeren Ordner',
+                    spaceNeededToSync: 'Benötigter Speicherplatz für Synchronisation',
+                    duplicates: 'Duplikate'
                 },
                 fr: {
                     title: 'DocuSync - Synchronisation de dossiers',
@@ -2672,7 +2678,10 @@ async def sync_page():
                     analyze: 'Analyser',
                     executeSync: 'Exécuter la synchronisation',
                     browse: 'Parcourir',
-                    language: 'Langue:'
+                    language: 'Langue:',
+                    numberOfFilesInBiggerFolder: 'Nombre de fichiers dans le dossier le plus grand',
+                    spaceNeededToSync: 'Espace nécessaire pour la synchronisation',
+                    duplicates: 'Doublons'
                 },
                 es: {
                     title: 'DocuSync - Sincronización de carpetas',
@@ -2686,7 +2695,10 @@ async def sync_page():
                     analyze: 'Analizar',
                     executeSync: 'Ejecutar sincronización',
                     browse: 'Examinar',
-                    language: 'Idioma:'
+                    language: 'Idioma:',
+                    numberOfFilesInBiggerFolder: 'Número de archivos en la carpeta más grande',
+                    spaceNeededToSync: 'Espacio necesario para sincronizar',
+                    duplicates: 'Duplicados'
                 },
                 it: {
                     title: 'DocuSync - Sincronizzazione cartelle',
@@ -2700,7 +2712,10 @@ async def sync_page():
                     analyze: 'Analizza',
                     executeSync: 'Esegui sincronizzazione',
                     browse: 'Sfoglia',
-                    language: 'Lingua:'
+                    language: 'Lingua:',
+                    numberOfFilesInBiggerFolder: 'Numero di file nella cartella più grande',
+                    spaceNeededToSync: 'Spazio necessario per sincronizzare',
+                    duplicates: 'Duplicati'
                 },
                 ru: {
                     title: 'DocuSync - Синхронизация папок',
@@ -2714,7 +2729,10 @@ async def sync_page():
                     analyze: 'Анализировать',
                     executeSync: 'Выполнить синхронизацию',
                     browse: 'Обзор',
-                    language: 'Язык:'
+                    language: 'Язык:',
+                    numberOfFilesInBiggerFolder: 'Количество файлов в большей папке',
+                    spaceNeededToSync: 'Необходимое место для синхронизации',
+                    duplicates: 'Дубликаты'
                 }
             };
             
@@ -4099,7 +4117,8 @@ async def sync_page():
                             header.style.marginBottom = '10px';
                             header.style.paddingTop = '10px';
                             header.style.borderTop = '2px solid #007bff';
-                            header.textContent = `Duplicates (${duplicatesPanel1.length}):`;
+                            const t = translations[currentLanguage] || translations.en;
+                            header.textContent = `${t.duplicates} (${duplicatesPanel1.length}):`;
                             panel1.appendChild(header);
                             
                             // Add button to eliminate duplicates
@@ -4406,7 +4425,8 @@ async def sync_page():
                             header2.style.marginBottom = '10px';
                             header2.style.paddingTop = '10px';
                             header2.style.borderTop = '2px solid #007bff';
-                            header2.textContent = `Duplicates (${duplicatesPanel2.length}):`;
+                            const t = translations[currentLanguage] || translations.en;
+                            header2.textContent = `${t.duplicates} (${duplicatesPanel2.length}):`;
                             panel2.appendChild(header2);
                             
                             // Add button to eliminate duplicates for panel2
@@ -4602,23 +4622,25 @@ async def sync_page():
                     // Stats for panel 1 (folder1)
                     if (biggerFolder === 1) {
                         // Folder1 is bigger - show "Number of Files in bigger folder" and "Space needed to sync: 0"
+                        const t = translations[currentLanguage] || translations.en;
                         document.getElementById('stats1').innerHTML = `
                             <div class="stats-item">
-                                <span>Number of Files in bigger folder:</span>
+                                <span>${t.numberOfFilesInBiggerFolder}:</span>
                                 <span>${biggerFolderCount}</span>
                             </div>
                             <div class="stats-item">
-                                <span>Space needed to sync:</span>
+                                <span>${t.spaceNeededToSync}:</span>
                                 <span>0</span>
                             </div>
                         `;
                     } else {
                         // Folder1 is smaller - show "Space needed to sync" with actual value
                         // Space needed to sync files FROM folder2 TO folder1
+                        const t = translations[currentLanguage] || translations.en;
                         const spaceNeeded = a.space_needed_folder1 || 0;
                         document.getElementById('stats1').innerHTML = `
                             <div class="stats-item">
-                                <span>Space needed to sync:</span>
+                                <span>${t.spaceNeededToSync}:</span>
                                 <span>${formatBytes(spaceNeeded)}</span>
                             </div>
                         `;
@@ -4627,23 +4649,25 @@ async def sync_page():
                     // Stats for panel 2 (folder2)
                     if (biggerFolder === 2) {
                         // Folder2 is bigger - show "Number of Files in bigger folder" and "Space needed to sync: 0"
+                        const t = translations[currentLanguage] || translations.en;
                         document.getElementById('stats2').innerHTML = `
                             <div class="stats-item">
-                                <span>Number of Files in bigger folder:</span>
+                                <span>${t.numberOfFilesInBiggerFolder}:</span>
                                 <span>${biggerFolderCount}</span>
                             </div>
                             <div class="stats-item">
-                                <span>Space needed to sync:</span>
+                                <span>${t.spaceNeededToSync}:</span>
                                 <span>0</span>
                             </div>
                         `;
                     } else {
                         // Folder2 is smaller - show "Space needed to sync" with actual value
                         // Space needed to sync files FROM folder1 TO folder2
+                        const t = translations[currentLanguage] || translations.en;
                         const spaceNeeded = a.space_needed_folder2 || 0;
                         document.getElementById('stats2').innerHTML = `
                             <div class="stats-item">
-                                <span>Space needed to sync:</span>
+                                <span>${t.spaceNeededToSync}:</span>
                                 <span>${formatBytes(spaceNeeded)}</span>
                             </div>
                         `;
