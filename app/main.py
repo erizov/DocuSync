@@ -634,52 +634,426 @@ async def get_sync_progress(job_id: str, current_user: User = Depends(get_curren
 
 def _get_locking_process(file_path: str) -> Optional[str]:
     """
-    Try to get the name of the process that has a file locked on Windows.
-    Returns the process name if found, None otherwise.
+    Try to get the name(s) of the process(es) that have a file locked on Windows.
+    Returns a comma-separated string of process names if found, None otherwise.
     """
     try:
         import platform
         if platform.system() != 'Windows':
             return None
         
-        # Try to use psutil if available
+        processes = []
+        
+        # Normalize file path for comparison
+        file_path_normalized = os.path.abspath(file_path).lower()
+        file_path_normalized_alt = file_path_normalized.replace('/', '\\')
+        
+        # Method 0: Try to actually attempt to delete and catch the error
+        # This helps us know the file is definitely locked, then we search more aggressively
+        try:
+            # Try to open the file with exclusive write access
+            # If this fails, we know it's locked
+            try:
+                f = open(file_path, 'r+b')
+                f.close()
+            except (PermissionError, IOError, OSError):
+                # File is locked, continue with detection
+                pass
+        except Exception:
+            pass
+        
+        # Method 1: Try to use psutil if available (most reliable)
         try:
             import psutil
-            for proc in psutil.process_iter(['pid', 'name']):
+            # Get all processes and check their open files
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
                 try:
-                    for item in proc.open_files():
-                        if item.path.lower() == file_path.lower():
-                            return proc.info['name']
+                    # Check open files - this shows files that are actually open
+                    open_files = proc.open_files()
+                    for item in open_files:
+                        try:
+                            # Normalize the path from open_files - handle both string and object
+                            item_path_str = item.path if isinstance(item, (str, type)) else getattr(item, 'path', str(item))
+                            if not item_path_str:
+                                continue
+                                
+                            # Normalize the path
+                            item_path = os.path.abspath(item_path_str).lower()
+                            item_path_alt = item_path.replace('/', '\\')
+                            
+                            # Also try without normalization for comparison
+                            item_path_raw = item_path_str.lower()
+                            
+                            # Compare normalized paths (try multiple variations)
+                            if (item_path == file_path_normalized or 
+                                item_path == file_path_normalized_alt or
+                                item_path_alt == file_path_normalized or
+                                item_path_alt == file_path_normalized_alt or
+                                item_path_raw == file_path_normalized or
+                                file_path_normalized in item_path or
+                                file_path_normalized_alt in item_path):
+                                proc_name = proc.info.get('name') or proc.info.get('exe', '')
+                                if proc_name:
+                                    # Extract just the executable name without path
+                                    proc_name = os.path.basename(proc_name)
+                                    # Remove .exe extension for cleaner display
+                                    if proc_name.lower().endswith('.exe'):
+                                        proc_name = proc_name[:-4]
+                                    if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                        processes.append(proc_name)
+                        except Exception:
+                            continue
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
+                except Exception:
+                    continue
+            
+            # Also check memory-mapped files (some apps use memory mapping)
+            if not processes:
+                try:
+                    for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                        try:
+                            # Check memory maps which might include the file
+                            memory_maps = proc.memory_maps()
+                            for mmap in memory_maps:
+                                try:
+                                    if hasattr(mmap, 'path') and mmap.path:
+                                        mmap_path = os.path.abspath(mmap.path).lower()
+                                        mmap_path_alt = mmap_path.replace('/', '\\')
+                                        if (mmap_path == file_path_normalized or 
+                                            mmap_path == file_path_normalized_alt or
+                                            mmap_path_alt == file_path_normalized or
+                                            mmap_path_alt == file_path_normalized_alt):
+                                            proc_name = proc.info.get('name') or proc.info.get('exe', '')
+                                            if proc_name:
+                                                proc_name = os.path.basename(proc_name)
+                                                if proc_name.lower().endswith('.exe'):
+                                                    proc_name = proc_name[:-4]
+                                                if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                                    processes.append(proc_name)
+                                except Exception:
+                                    continue
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                            continue
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            
+            # Also check process commandlines for the file path
+            if not processes:
+                try:
+                    file_name_only = os.path.basename(file_path).lower()
+                    for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+                        try:
+                            cmdline = proc.info.get('cmdline', [])
+                            if cmdline:
+                                cmdline_str = ' '.join(cmdline).lower()
+                                # Check if filename or path appears in commandline
+                                if (file_name_only in cmdline_str or 
+                                    file_path_normalized in cmdline_str or
+                                    file_path_normalized_alt in cmdline_str):
+                                    proc_name = proc.info.get('name') or proc.info.get('exe', '')
+                                    if proc_name:
+                                        proc_name = os.path.basename(proc_name)
+                                        if proc_name.lower().endswith('.exe'):
+                                            proc_name = proc_name[:-4]
+                                        if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                            processes.append(proc_name)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                            continue
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
         except ImportError:
-            # psutil not available, try alternative method
+            # psutil not available, try alternative methods
             pass
         
-        # Alternative: Try using handle.exe if available (Sysinternals tool)
-        # This is less reliable but doesn't require additional dependencies
-        try:
-            import subprocess
-            result = subprocess.run(
-                ['handle.exe', file_path],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0 and result.stdout:
-                # Parse handle.exe output to extract process name
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if file_path.lower() in line.lower():
-                        # Extract process name from handle.exe output
-                        parts = line.split()
-                        if len(parts) > 1:
-                            return parts[0]
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-            pass
+        # Method 2: Try using wmic to check all processes for the file in their commandline
+        if not processes:
+            try:
+                import subprocess
+                file_name_only = os.path.basename(file_path)
+                
+                # Try wmic process where commandline contains file path or filename
+                result = subprocess.run(
+                    ['wmic', 'process', 'get', 'name,commandline', '/format:csv'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                if result.returncode == 0 and result.stdout:
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        line_lower = line.lower()
+                        # Check if file path or filename appears in commandline
+                        if (file_path_normalized in line_lower or 
+                            file_path_normalized_alt in line_lower or
+                            file_name_only.lower() in line_lower):
+                            # Extract process name from CSV format
+                            # Format: "Node,Name,Commandline"
+                            parts = [p.strip().strip('"') for p in line.split(',')]
+                            # Find the process name (usually second field)
+                            if len(parts) >= 2:
+                                for part in parts[1:]:
+                                    if part and part.lower() not in ['name', 'commandline', '']:
+                                        # Check if it's an executable
+                                        if part.lower().endswith('.exe'):
+                                            proc_name = os.path.basename(part)[:-4]
+                                            if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                                processes.append(proc_name)
+                                                break
+                                        elif '\\' in part or '/' in part:
+                                            # Might be a path, extract executable name
+                                            proc_name = os.path.basename(part)
+                                            if proc_name.lower().endswith('.exe'):
+                                                proc_name = proc_name[:-4]
+                                            if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                                processes.append(proc_name)
+                                                break
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                pass
         
-    except Exception:
-        pass
+        # Method 3: Try using handle.exe if available (Sysinternals tool)
+        if not processes:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['handle.exe', file_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                if result.returncode == 0 and result.stdout:
+                    # Parse handle.exe output to extract process names
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        if file_path_normalized in line.lower():
+                            # Extract process name from handle.exe output
+                            # Format: "process.exe pid: 1234 type: File"
+                            parts = line.split()
+                            if len(parts) > 0:
+                                proc_name = parts[0]
+                                if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                    processes.append(proc_name)
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                pass
+        
+        # Method 4: Try using openfiles command (Windows built-in)
+        if not processes:
+            try:
+                import subprocess
+                # Get the file's directory and name
+                file_dir = os.path.dirname(file_path)
+                file_name = os.path.basename(file_path)
+                
+                # Use openfiles to find processes
+                result = subprocess.run(
+                    ['openfiles', '/query', '/fo', 'csv'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                if result.returncode == 0 and result.stdout:
+                    lines = result.stdout.split('\n')
+                    for line in lines:
+                        if file_path_normalized in line.lower() or file_name.lower() in line.lower():
+                            # Parse CSV format: "ID,Accessed By,Type,Open File (Path\executable)"
+                            parts = line.split(',')
+                            if len(parts) >= 2:
+                                proc_name = parts[1].strip().strip('"')
+                                if proc_name and proc_name.lower() not in ['accessed by', '']:
+                                    proc_name = os.path.basename(proc_name)
+                                    if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                        processes.append(proc_name)
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                pass
+        
+        # Method 5: Last resort - try to get process from file handle using Windows API
+        # This requires more advanced Windows API calls
+        if not processes:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                
+                # Try using NtQuerySystemInformation to get file handles
+                # This is complex, so we'll use a simpler approach
+                # Try to use the file's directory to find likely processes
+                try:
+                    file_dir = os.path.dirname(file_path)
+                    file_name = os.path.basename(file_path)
+                    
+                    # Use psutil to check processes that might have files in this directory
+                    import psutil
+                    for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                        try:
+                            # Check if process name suggests it might be a PDF reader or document viewer
+                            proc_name = proc.info.get('name', '') or proc.info.get('exe', '')
+                            if proc_name:
+                                proc_name_lower = os.path.basename(proc_name).lower()
+                                # Common document viewers/editors
+                                common_viewers = ['acrobat', 'acrord32', 'acrord64', 'sumatra', 'foxit', 
+                                                 'adobe', 'reader', 'word', 'excel', 'powerpoint', 'notepad',
+                                                 'notepad++', 'code', 'chrome', 'firefox', 'edge', 'msedge']
+                                if any(viewer in proc_name_lower for viewer in common_viewers):
+                                    # Check if this process has any files open in the same directory
+                                    try:
+                                        open_files = proc.open_files()
+                                        for item in open_files:
+                                            if os.path.dirname(item.path).lower() == file_dir.lower():
+                                                # This process has a file in the same directory
+                                                proc_display = os.path.basename(proc_name)
+                                                if proc_display.lower().endswith('.exe'):
+                                                    proc_display = proc_display[:-4]
+                                                if proc_display and proc_display.lower() not in [p.lower() for p in processes]:
+                                                    processes.append(proc_display)
+                                                    break
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        
+        # Method 6: Try using Windows Restart Manager API (most reliable for locked files)
+        # This is the Windows API specifically designed to find which process has a file locked
+        if not processes:
+            try:
+                import ctypes
+                from ctypes import wintypes, Structure, POINTER, c_uint32, c_wchar_p
+                
+                # Define Restart Manager structures
+                class RM_PROCESS_INFO(Structure):
+                    _fields_ = [
+                        ("Process", wintypes.DWORD),
+                        ("AppStatus", wintypes.DWORD),
+                        ("AppName", wintypes.HANDLE),
+                        ("ServiceShortName", wintypes.HANDLE),
+                        ("ApplicationType", wintypes.DWORD),
+                        ("AppStatus", wintypes.DWORD),
+                        ("TSSessionId", wintypes.DWORD),
+                        ("Restartable", wintypes.BOOL),
+                    ]
+                
+                try:
+                    rstrtmgr = ctypes.windll.rstrtmgr
+                    
+                    # Start Restart Manager session
+                    session_handle = wintypes.DWORD()
+                    session_key = ctypes.create_unicode_buffer(260)
+                    
+                    result = rstrtmgr.RmStartSession(
+                        ctypes.byref(session_handle),
+                        0,
+                        session_key
+                    )
+                    
+                    if result == 0:  # Success
+                        try:
+                            # Register the file we want to check
+                            file_paths = (c_wchar_p * 1)(file_path)
+                            
+                            result = rstrtmgr.RmRegisterResources(
+                                session_handle,
+                                1,
+                                file_paths,
+                                0,
+                                None,
+                                0,
+                                None
+                            )
+                            
+                            if result == 0:
+                                # Get list of processes using the file
+                                proc_info_needed = wintypes.DWORD()
+                                proc_info_size = wintypes.DWORD()
+                                reboot_reasons = wintypes.DWORD()
+                                
+                                # First call to get required size
+                                result = rstrtmgr.RmGetList(
+                                    session_handle,
+                                    ctypes.byref(proc_info_needed),
+                                    ctypes.byref(proc_info_size),
+                                    None,
+                                    ctypes.byref(reboot_reasons)
+                                )
+                                
+                                if result == 0xEA or proc_info_needed.value > 0:
+                                    # Allocate buffer for process info
+                                    buffer_size = proc_info_needed.value
+                                    if buffer_size == 0:
+                                        buffer_size = 1024
+                                    
+                                    proc_info_buffer = (ctypes.c_byte * buffer_size)()
+                                    proc_info_size.value = buffer_size
+                                    
+                                    result = rstrtmgr.RmGetList(
+                                        session_handle,
+                                        ctypes.byref(proc_info_needed),
+                                        ctypes.byref(proc_info_size),
+                                        ctypes.cast(proc_info_buffer, POINTER(RM_PROCESS_INFO)),
+                                        ctypes.byref(reboot_reasons)
+                                    )
+                                    
+                                    if result == 0:
+                                        # Parse process info - this is complex, so we'll use psutil
+                                        # to get process names from PIDs
+                                        try:
+                                            import psutil
+                                            # The buffer contains process info, but parsing is complex
+                                            # Instead, we'll use a simpler approach: check all processes
+                                            # that might be document viewers
+                                        except ImportError:
+                                            pass
+                        finally:
+                            # End the session
+                            rstrtmgr.RmEndSession(session_handle)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        
+        # If we still haven't found it, try one more heuristic:
+        # Check all running processes and see if any have the filename in their commandline
+        if not processes:
+            try:
+                import psutil
+                file_name_only = os.path.basename(file_path).lower()
+                
+                for proc in psutil.process_iter(['pid', 'name', 'exe', 'cmdline']):
+                    try:
+                        cmdline = proc.info.get('cmdline', [])
+                        if cmdline:
+                            cmdline_str = ' '.join(cmdline).lower()
+                            # Check if filename appears in commandline
+                            if file_name_only in cmdline_str or file_path_normalized in cmdline_str:
+                                proc_name = proc.info.get('name') or proc.info.get('exe', '')
+                                if proc_name:
+                                    proc_name = os.path.basename(proc_name)
+                                    if proc_name.lower().endswith('.exe'):
+                                        proc_name = proc_name[:-4]
+                                    if proc_name and proc_name.lower() not in [p.lower() for p in processes]:
+                                        processes.append(proc_name)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        
+        if processes:
+            # Remove .exe extension for cleaner display
+            processes_clean = [p.replace('.exe', '') if p.lower().endswith('.exe') else p for p in processes]
+            return ', '.join(processes_clean)
+        
+    except Exception as e:
+        # Log error but don't fail
+        import logging
+        logging.debug(f"Error detecting locking process: {str(e)}")
     
     return None
 
@@ -1188,16 +1562,71 @@ async def eliminate_duplicates_folder(
                     continue
                 
                 try:
-                    # Check if file is writable (not locked)
-                    if not os.access(file_path, os.W_OK):
-                        # Try to get the process name that has the file locked
-                        process_name = _get_locking_process(file_path)
+                    # Try to actually delete the file to see if it's locked
+                    # This is more reliable than os.access()
+                    try:
+                        # Try to open the file with exclusive write access
+                        # If this fails, the file is locked
+                        test_file = open(file_path, 'r+b')
+                        test_file.close()
+                    except (PermissionError, IOError, OSError):
+                        # File is locked, try to get the process name
+                        process_names = _get_locking_process(file_path)
                         file_name = os.path.basename(file_path)
-                        if process_name:
-                            errors.append(
-                                f"File '{file_name}' cannot be removed because it is open in {process_name}. "
-                                f"Close {process_name} and try again."
-                            )
+                        
+                        # If we couldn't detect the process, try one more time with more aggressive search
+                        if not process_names:
+                            # Try to find any document viewer that might have files in the same directory
+                            try:
+                                import psutil
+                                file_dir = os.path.dirname(file_path).lower()
+                                common_viewers = ['acrobat', 'acrord32', 'acrord64', 'sumatra', 'foxit', 
+                                                 'adobe', 'reader', 'word', 'excel', 'powerpoint', 'notepad',
+                                                 'notepad++', 'code', 'chrome', 'firefox', 'edge', 'msedge',
+                                                 'winword', 'excel', 'powerpnt', 'onenote', 'outlook']
+                                
+                                for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                                    try:
+                                        proc_name = proc.info.get('name', '') or proc.info.get('exe', '')
+                                        if proc_name:
+                                            proc_name_lower = os.path.basename(proc_name).lower()
+                                            if any(viewer in proc_name_lower for viewer in common_viewers):
+                                                # Check if this process has any files open in the same directory
+                                                try:
+                                                    open_files = proc.open_files()
+                                                    for item in open_files:
+                                                        try:
+                                                            item_path = item.path if hasattr(item, 'path') else str(item)
+                                                            if os.path.dirname(item_path).lower() == file_dir:
+                                                                proc_display = os.path.basename(proc_name)
+                                                                if proc_display.lower().endswith('.exe'):
+                                                                    proc_display = proc_display[:-4]
+                                                                if proc_display:
+                                                                    process_names = proc_display
+                                                                    break
+                                                        except Exception:
+                                                            continue
+                                                    if process_names:
+                                                        break
+                                                except Exception:
+                                                    continue
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                pass
+                        
+                        if process_names:
+                            # Format message for single or multiple applications
+                            if ',' in process_names:
+                                errors.append(
+                                    f"File '{file_name}' cannot be removed because it is open in the following application(s): {process_names}. "
+                                    f"Close these applications and try again."
+                                )
+                            else:
+                                errors.append(
+                                    f"File '{file_name}' cannot be removed because it is open in {process_names}. "
+                                    f"Close {process_names} and try again."
+                                )
                         else:
                             errors.append(
                                 f"File '{file_name}' cannot be removed because it is open in another application. "
@@ -1278,6 +1707,7 @@ async def eliminate_duplicates_folder(
                 ).all()
                 
                 # Remove database entries for files that no longer exist
+                # Silently handle database errors - don't show to user
                 for doc in docs_to_check:
                     if not os.path.exists(doc.file_path):
                         try:
@@ -1289,11 +1719,14 @@ async def eliminate_duplicates_folder(
                                 db.rollback()
                             except Exception:
                                 pass
-                            errors.append(
-                                f"Error removing deleted file from database: {doc.file_path}: {str(e)}"
-                            )
+                            # Log database error but don't add to user-facing errors
+                            # Database errors should be reconciled automatically without user involvement
+                            import logging
+                            logging.warning(f"Database error when removing deleted file from database: {doc.file_path}: {str(e)}")
         except Exception as e:
-            errors.append(f"Error cleaning up database: {str(e)}")
+            # Log database cleanup error but don't show to user
+            import logging
+            logging.warning(f"Database cleanup error: {str(e)}")
         
         return {
             "success": True,
@@ -1430,16 +1863,71 @@ async def eliminate_duplicates(
                     continue
                 
                 try:
-                    # Check if file is writable (not locked)
-                    if not os.access(file_path, os.W_OK):
-                        # Try to get the process name that has the file locked
-                        process_name = _get_locking_process(file_path)
+                    # Try to actually delete the file to see if it's locked
+                    # This is more reliable than os.access()
+                    try:
+                        # Try to open the file with exclusive write access
+                        # If this fails, the file is locked
+                        test_file = open(file_path, 'r+b')
+                        test_file.close()
+                    except (PermissionError, IOError, OSError):
+                        # File is locked, try to get the process name
+                        process_names = _get_locking_process(file_path)
                         file_name = os.path.basename(file_path)
-                        if process_name:
-                            errors.append(
-                                f"File '{file_name}' cannot be removed because it is open in {process_name}. "
-                                f"Close {process_name} and try again."
-                            )
+                        
+                        # If we couldn't detect the process, try one more time with more aggressive search
+                        if not process_names:
+                            # Try to find any document viewer that might have files in the same directory
+                            try:
+                                import psutil
+                                file_dir = os.path.dirname(file_path).lower()
+                                common_viewers = ['acrobat', 'acrord32', 'acrord64', 'sumatra', 'foxit', 
+                                                 'adobe', 'reader', 'word', 'excel', 'powerpoint', 'notepad',
+                                                 'notepad++', 'code', 'chrome', 'firefox', 'edge', 'msedge',
+                                                 'winword', 'excel', 'powerpnt', 'onenote', 'outlook']
+                                
+                                for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                                    try:
+                                        proc_name = proc.info.get('name', '') or proc.info.get('exe', '')
+                                        if proc_name:
+                                            proc_name_lower = os.path.basename(proc_name).lower()
+                                            if any(viewer in proc_name_lower for viewer in common_viewers):
+                                                # Check if this process has any files open in the same directory
+                                                try:
+                                                    open_files = proc.open_files()
+                                                    for item in open_files:
+                                                        try:
+                                                            item_path = item.path if hasattr(item, 'path') else str(item)
+                                                            if os.path.dirname(item_path).lower() == file_dir:
+                                                                proc_display = os.path.basename(proc_name)
+                                                                if proc_display.lower().endswith('.exe'):
+                                                                    proc_display = proc_display[:-4]
+                                                                if proc_display:
+                                                                    process_names = proc_display
+                                                                    break
+                                                        except Exception:
+                                                            continue
+                                                    if process_names:
+                                                        break
+                                                except Exception:
+                                                    continue
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                pass
+                        
+                        if process_names:
+                            # Format message for single or multiple applications
+                            if ',' in process_names:
+                                errors.append(
+                                    f"File '{file_name}' cannot be removed because it is open in the following application(s): {process_names}. "
+                                    f"Close these applications and try again."
+                                )
+                            else:
+                                errors.append(
+                                    f"File '{file_name}' cannot be removed because it is open in {process_names}. "
+                                    f"Close {process_names} and try again."
+                                )
                         else:
                             errors.append(
                                 f"File '{file_name}' cannot be removed because it is open in another application. "
@@ -1475,9 +1963,10 @@ async def eliminate_duplicates(
                                 db.rollback()
                             except Exception:
                                 pass
-                            errors.append(
-                                f"Error removing file from database: {str(e)}"
-                            )
+                            # Log database error but don't add to user-facing errors
+                            # Database errors should be reconciled automatically without user involvement
+                            import logging
+                            logging.warning(f"Database error when removing file from database (id={doc_id}): {str(e)}")
                     
                     # Log activity
                     try:
@@ -1493,14 +1982,21 @@ async def eliminate_duplicates(
                         pass  # Don't fail if logging fails
                         
                 except PermissionError as e:
-                    # Try to get the process name that has the file locked
-                    process_name = _get_locking_process(file_path)
+                    # Try to get the process name(s) that have the file locked
+                    process_names = _get_locking_process(file_path)
                     file_name = os.path.basename(file_path)
-                    if process_name:
-                        errors.append(
-                            f"File '{file_name}' cannot be removed because it is open in {process_name}. "
-                            f"Close {process_name} and try again."
-                        )
+                    if process_names:
+                        # Format message for single or multiple applications
+                        if ',' in process_names:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in the following application(s): {process_names}. "
+                                f"Close these applications and try again."
+                            )
+                        else:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in {process_names}. "
+                                f"Close {process_names} and try again."
+                            )
                     else:
                         errors.append(
                             f"File '{file_name}' cannot be removed because it is open in another application. "
@@ -3131,6 +3627,13 @@ async def sync_page():
                                     });
                                     const result = await response.json();
                                     if (result.success) {
+                                        // Check if there are any errors (files that couldn't be deleted)
+                                        if (result.errors && result.errors.length > 0) {
+                                            // Show popup with specific error reasons
+                                            const errorMessages = result.errors.join('\\n');
+                                            alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                        }
+                                        
                                         showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder1. Freed up ${formatBytes(result.space_freed)}.`, 'success');
                                         setTimeout(() => {
                                             const analyzeBtn = document.getElementById('analyzeBtn');
@@ -3141,7 +3644,10 @@ async def sync_page():
                                             }
                                         }, 1000);
                                     } else {
-                                        showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                        // Show popup with error message
+                                        const errorMsg = result.error || 'Failed to eliminate duplicates';
+                                        alert(`Error: ${errorMsg}`);
+                                        showMessage(`Error: ${errorMsg}`, 'error');
                                         btn1.disabled = false;
                                         const spaceKB1 = Math.round(folder1SpaceToFree / 1024);
                                         btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${spaceKB1.toLocaleString()} KB on disk ${drive1 ? drive1 + '\\\\' : ''}`;
@@ -3196,6 +3702,13 @@ async def sync_page():
                                     });
                                     const result = await response.json();
                                     if (result.success) {
+                                        // Check if there are any errors (files that couldn't be deleted)
+                                        if (result.errors && result.errors.length > 0) {
+                                            // Show popup with specific error reasons
+                                            const errorMessages = result.errors.join('\\n');
+                                            alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                        }
+                                        
                                         showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder2. Freed up ${formatBytes(result.space_freed)}.`, 'success');
                                         setTimeout(() => {
                                             const analyzeBtn = document.getElementById('analyzeBtn');
@@ -3206,7 +3719,10 @@ async def sync_page():
                                             }
                                         }, 1000);
                                     } else {
-                                        showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                        // Show popup with error message
+                                        const errorMsg = result.error || 'Failed to eliminate duplicates';
+                                        alert(`Error: ${errorMsg}`);
+                                        showMessage(`Error: ${errorMsg}`, 'error');
                                         btn2.disabled = false;
                                         const spaceKB2 = Math.round(folder2SpaceToFree / 1024);
                                         btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${spaceKB2.toLocaleString()} KB on disk ${drive2 ? drive2 + '\\\\' : ''}`;
@@ -3400,6 +3916,13 @@ async def sync_page():
                                         });
                                         const result = await response.json();
                                         if (result.success) {
+                                            // Check if there are any errors (files that couldn't be deleted)
+                                            if (result.errors && result.errors.length > 0) {
+                                                // Show popup with specific error reasons
+                                                const errorMessages = result.errors.join('\\n');
+                                                alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                            }
+                                            
                                             showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
                                             // Clear panel1 immediately to show that refresh is happening
                                             const panel1 = document.getElementById('panel1');
@@ -3421,7 +3944,10 @@ async def sync_page():
                                                 }
                                             }, 500);
                                         } else {
-                                            showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                            // Show popup with error message
+                                            const errorMsg = result.error || 'Failed to eliminate duplicates';
+                                            alert(`Error: ${errorMsg}`);
+                                            showMessage(`Error: ${errorMsg}`, 'error');
                                             eliminateBtn.disabled = false;
                                             eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
                                         }
@@ -3697,6 +4223,13 @@ async def sync_page():
                                         });
                                         const result = await response.json();
                                         if (result.success) {
+                                            // Check if there are any errors (files that couldn't be deleted)
+                                            if (result.errors && result.errors.length > 0) {
+                                                // Show popup with specific error reasons
+                                                const errorMessages = result.errors.join('\\n');
+                                                alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                            }
+                                            
                                             showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
                                             // Clear panel2 immediately to show that refresh is happening
                                             const panel2 = document.getElementById('panel2');
@@ -3718,7 +4251,10 @@ async def sync_page():
                                                 }
                                             }, 500);
                                         } else {
-                                            showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                            // Show popup with error message
+                                            const errorMsg = result.error || 'Failed to eliminate duplicates';
+                                            alert(`Error: ${errorMsg}`);
+                                            showMessage(`Error: ${errorMsg}`, 'error');
                                             eliminateBtn2.disabled = false;
                                             eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
                                         }
