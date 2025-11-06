@@ -632,6 +632,68 @@ async def get_sync_progress(job_id: str, current_user: User = Depends(get_curren
     return data
 
 
+def _get_locking_process(file_path: str) -> Optional[str]:
+    """
+    Try to get the name of the process that has a file locked on Windows.
+    Returns the process name if found, None otherwise.
+    """
+    try:
+        import platform
+        if platform.system() != 'Windows':
+            return None
+        
+        # Try to use psutil if available
+        try:
+            import psutil
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    for item in proc.open_files():
+                        if item.path.lower() == file_path.lower():
+                            return proc.info['name']
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except ImportError:
+            # psutil not available, try alternative method
+            pass
+        
+        # Alternative: Try using handle.exe if available (Sysinternals tool)
+        # This is less reliable but doesn't require additional dependencies
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['handle.exe', file_path],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0 and result.stdout:
+                # Parse handle.exe output to extract process name
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if file_path.lower() in line.lower():
+                        # Extract process name from handle.exe output
+                        parts = line.split()
+                        if len(parts) > 1:
+                            return parts[0]
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            pass
+        
+    except Exception:
+        pass
+    
+    return None
+
+
+def _get_date_modified(file_path: str) -> Optional[str]:
+    """Get modified date from file system safely."""
+    try:
+        if os.path.exists(file_path):
+            return datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+    except Exception:
+        pass
+    return None
+
+
 @app.post("/api/sync/analyze")
 async def analyze_sync(
     request: SyncAnalysisRequest,
@@ -736,6 +798,8 @@ async def analyze_sync(
                                     "file_path": doc.file_path,
                                     "size": doc.size,
                                     "md5_hash": doc.md5_hash,
+                                    "date_created": doc.date_created.isoformat() if doc.date_created else None,
+                                    "date_modified": _get_date_modified(doc.file_path),
                                 }
                                 for doc in dup["folder1_docs"]
                             ],
@@ -746,6 +810,8 @@ async def analyze_sync(
                                     "file_path": doc.file_path,
                                     "size": doc.size,
                                     "md5_hash": doc.md5_hash,
+                                    "date_created": doc.date_created.isoformat() if doc.date_created else None,
+                                    "date_modified": _get_date_modified(doc.file_path),
                                 }
                                 for doc in dup["folder2_docs"]
                             ],
@@ -998,6 +1064,466 @@ async def delete_file(
         }
     except Exception as e:
         return {"success": False, "error": f"Error deleting file: {str(e)}"}
+
+
+@app.post("/api/sync/eliminate-duplicates-folder")
+async def eliminate_duplicates_folder(
+    request: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Eliminate duplicate files in a specific folder and keep only the latest file.
+    
+    For each duplicate group, finds the latest file (by date_modified or 
+    date_created) and deletes all other files in the target folder.
+    """
+    from app.reports import log_activity
+    
+    duplicates = request.get("duplicates", [])
+    target_folder = request.get("target_folder", 1)  # 1 or 2
+    
+    if not duplicates:
+        return {
+            "success": False,
+            "error": "No duplicates provided"
+        }
+    
+    deleted_count = 0
+    kept_count = 0
+    space_freed = 0
+    errors = []
+    
+    try:
+        for dup in duplicates:
+            # Collect all files from both folders
+            all_files = []
+            
+            # Add files from folder1
+            for doc in dup.get("folder1_docs", []):
+                all_files.append({
+                    "file_path": doc.get("file_path"),
+                    "id": doc.get("id"),
+                    "date_modified": doc.get("date_modified"),
+                    "date_created": doc.get("date_created"),
+                    "size": doc.get("size", 0),
+                    "folder": 1
+                })
+            
+            # Add files from folder2
+            for doc in dup.get("folder2_docs", []):
+                all_files.append({
+                    "file_path": doc.get("file_path"),
+                    "id": doc.get("id"),
+                    "date_modified": doc.get("date_modified"),
+                    "date_created": doc.get("date_created"),
+                    "size": doc.get("size", 0),
+                    "folder": 2
+                })
+            
+            if len(all_files) < 2:
+                continue
+            
+            # Find the latest file
+            latest_file = None
+            latest_date = None
+            
+            for file_info in all_files:
+                # Try to get date_modified from file system if not in response
+                file_path = file_info["file_path"]
+                if not file_info.get("date_modified") and os.path.exists(file_path):
+                    try:
+                        mtime = os.path.getmtime(file_path)
+                        file_info["date_modified"] = datetime.fromtimestamp(mtime).isoformat()
+                    except Exception:
+                        pass
+                
+                # Determine the date to compare
+                compare_date = None
+                if file_info.get("date_modified"):
+                    try:
+                        compare_date = datetime.fromisoformat(file_info["date_modified"])
+                    except Exception:
+                        pass
+                
+                if not compare_date and file_info.get("date_created"):
+                    try:
+                        compare_date = datetime.fromisoformat(file_info["date_created"])
+                    except Exception:
+                        pass
+                
+                # If still no date, try to get from file system
+                if not compare_date and os.path.exists(file_path):
+                    try:
+                        compare_date = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    except Exception:
+                        try:
+                            compare_date = datetime.fromtimestamp(os.path.getctime(file_path))
+                        except Exception:
+                            pass
+                
+                if compare_date:
+                    if latest_date is None or compare_date > latest_date:
+                        latest_date = compare_date
+                        latest_file = file_info
+            
+            if not latest_file:
+                # If no date available, keep the first file
+                latest_file = all_files[0]
+            
+            # Delete files from target folder only (except the latest file)
+            for file_info in all_files:
+                # Only process files from target folder
+                if file_info["folder"] != target_folder:
+                    continue
+                
+                # Skip if this is the latest file
+                if file_info["file_path"] == latest_file["file_path"]:
+                    kept_count += 1
+                    continue
+                
+                file_path = file_info["file_path"]
+                
+                if not os.path.exists(file_path):
+                    continue
+                
+                try:
+                    # Check if file is writable (not locked)
+                    if not os.access(file_path, os.W_OK):
+                        # Try to get the process name that has the file locked
+                        process_name = _get_locking_process(file_path)
+                        file_name = os.path.basename(file_path)
+                        if process_name:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in {process_name}. "
+                                f"Close {process_name} and try again."
+                            )
+                        else:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in another application. "
+                                f"Close the application that has the file open and try again."
+                            )
+                        continue
+                    
+                    # Get file size for logging
+                    file_size = file_info.get("size", 0)
+                    if not file_size:
+                        try:
+                            file_size = os.path.getsize(file_path)
+                        except Exception:
+                            pass
+                    
+                    # Delete the file
+                    os.remove(file_path)
+                    deleted_count += 1
+                    space_freed += file_size
+                    
+                    # Remove from database
+                    doc_id = file_info.get("id")
+                    if doc_id:
+                        try:
+                            document = db.query(Document).filter(
+                                Document.id == doc_id
+                            ).first()
+                            if document:
+                                db.delete(document)
+                                db.commit()
+                        except Exception as e:
+                            # Rollback the transaction if it failed
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                            errors.append(
+                                f"Error removing file from database: {str(e)}"
+                            )
+                    
+                    # Log activity
+                    try:
+                        log_activity(
+                            activity_type="delete",
+                            description=f"Deleted duplicate file: {file_path}",
+                            document_path=file_path,
+                            space_saved_bytes=file_size,
+                            operation_count=1,
+                            user_id=current_user.id if current_user else None
+                        )
+                    except Exception:
+                        pass
+                        
+                except PermissionError as e:
+                    errors.append(
+                        f"Permission denied when deleting {file_path}. "
+                        f"File may be open in another application."
+                    )
+                except Exception as e:
+                    errors.append(f"Error deleting {file_path}: {str(e)}")
+        
+        # Clean up database entries for files that no longer exist on disk
+        # This ensures the database is consistent with the file system
+        try:
+            folder1 = request.get("folder1", "")
+            folder2 = request.get("folder2", "")
+            target_folder_path = folder1 if target_folder == 1 else folder2
+            
+            if target_folder_path:
+                # Normalize path
+                target_folder_path = os.path.abspath(target_folder_path)
+                if target_folder_path and len(target_folder_path) >= 2 and target_folder_path[1] == ':':
+                    target_folder_path = target_folder_path[0].upper() + target_folder_path[1:]
+                
+                # Find all documents in the target folder
+                docs_to_check = db.query(Document).filter(
+                    Document.file_path.like(f"{target_folder_path}%")
+                ).all()
+                
+                # Remove database entries for files that no longer exist
+                for doc in docs_to_check:
+                    if not os.path.exists(doc.file_path):
+                        try:
+                            db.delete(doc)
+                            db.commit()
+                        except Exception as e:
+                            # Rollback the transaction if it failed
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                            errors.append(
+                                f"Error removing deleted file from database: {doc.file_path}: {str(e)}"
+                            )
+        except Exception as e:
+            errors.append(f"Error cleaning up database: {str(e)}")
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "kept_count": kept_count,
+            "space_freed": space_freed,
+            "errors": errors if errors else None
+        }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error eliminating duplicates: {str(e)}",
+            "deleted_count": deleted_count,
+            "kept_count": kept_count,
+            "space_freed": space_freed
+        }
+
+
+@app.post("/api/sync/eliminate-duplicates")
+async def eliminate_duplicates(
+    request: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Eliminate duplicate files and keep only the latest file.
+    
+    For each duplicate group, finds the latest file (by date_modified or 
+    date_created) and deletes all other files.
+    """
+    from app.reports import log_activity
+    
+    duplicates = request.get("duplicates", [])
+    
+    if not duplicates:
+        return {
+            "success": False,
+            "error": "No duplicates provided"
+        }
+    
+    deleted_count = 0
+    kept_count = 0
+    errors = []
+    
+    try:
+        for dup in duplicates:
+            # Collect all files from both folders
+            all_files = []
+            
+            # Add files from folder1
+            for doc in dup.get("folder1_docs", []):
+                all_files.append({
+                    "file_path": doc.get("file_path"),
+                    "id": doc.get("id"),
+                    "date_modified": doc.get("date_modified"),
+                    "date_created": doc.get("date_created"),
+                    "size": doc.get("size", 0)
+                })
+            
+            # Add files from folder2
+            for doc in dup.get("folder2_docs", []):
+                all_files.append({
+                    "file_path": doc.get("file_path"),
+                    "id": doc.get("id"),
+                    "date_modified": doc.get("date_modified"),
+                    "date_created": doc.get("date_created"),
+                    "size": doc.get("size", 0)
+                })
+            
+            if len(all_files) < 2:
+                # Need at least 2 files to have duplicates
+                continue
+            
+            # Find the latest file
+            # Use date_modified if available, otherwise date_created
+            latest_file = None
+            latest_date = None
+            
+            for file_info in all_files:
+                # Try to get date_modified from file system if not in response
+                file_path = file_info["file_path"]
+                if not file_info.get("date_modified") and os.path.exists(file_path):
+                    try:
+                        mtime = os.path.getmtime(file_path)
+                        file_info["date_modified"] = datetime.fromtimestamp(mtime).isoformat()
+                    except Exception:
+                        pass
+                
+                # Determine the date to compare
+                compare_date = None
+                if file_info.get("date_modified"):
+                    try:
+                        compare_date = datetime.fromisoformat(file_info["date_modified"])
+                    except Exception:
+                        pass
+                
+                if not compare_date and file_info.get("date_created"):
+                    try:
+                        compare_date = datetime.fromisoformat(file_info["date_created"])
+                    except Exception:
+                        pass
+                
+                # If still no date, try to get from file system
+                if not compare_date and os.path.exists(file_path):
+                    try:
+                        compare_date = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    except Exception:
+                        try:
+                            compare_date = datetime.fromtimestamp(os.path.getctime(file_path))
+                        except Exception:
+                            pass
+                
+                if compare_date:
+                    if latest_date is None or compare_date > latest_date:
+                        latest_date = compare_date
+                        latest_file = file_info
+            
+            if not latest_file:
+                # If no date available, keep the first file
+                latest_file = all_files[0]
+                errors.append(f"Could not determine latest file for {dup.get('relative_path', 'unknown')}, keeping first file")
+            
+            # Delete all other files
+            for file_info in all_files:
+                if file_info["file_path"] == latest_file["file_path"]:
+                    kept_count += 1
+                    continue
+                
+                file_path = file_info["file_path"]
+                
+                if not os.path.exists(file_path):
+                    # File already deleted, skip
+                    continue
+                
+                try:
+                    # Check if file is writable (not locked)
+                    if not os.access(file_path, os.W_OK):
+                        # Try to get the process name that has the file locked
+                        process_name = _get_locking_process(file_path)
+                        file_name = os.path.basename(file_path)
+                        if process_name:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in {process_name}. "
+                                f"Close {process_name} and try again."
+                            )
+                        else:
+                            errors.append(
+                                f"File '{file_name}' cannot be removed because it is open in another application. "
+                                f"Close the application that has the file open and try again."
+                            )
+                        continue
+                    
+                    # Get file size for logging
+                    file_size = file_info.get("size", 0)
+                    if not file_size and os.path.exists(file_path):
+                        try:
+                            file_size = os.path.getsize(file_path)
+                        except Exception:
+                            pass
+                    
+                    # Delete the file
+                    os.remove(file_path)
+                    deleted_count += 1
+                    
+                    # Remove from database
+                    doc_id = file_info.get("id")
+                    if doc_id:
+                        try:
+                            document = db.query(Document).filter(
+                                Document.id == doc_id
+                            ).first()
+                            if document:
+                                db.delete(document)
+                                db.commit()
+                        except Exception as e:
+                            # Rollback the transaction if it failed
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                            errors.append(
+                                f"Error removing file from database: {str(e)}"
+                            )
+                    
+                    # Log activity
+                    try:
+                        log_activity(
+                            activity_type="delete",
+                            description=f"Deleted duplicate file: {file_path}",
+                            document_path=file_path,
+                            space_saved_bytes=file_size,
+                            operation_count=1,
+                            user_id=current_user.id if current_user else None
+                        )
+                    except Exception:
+                        pass  # Don't fail if logging fails
+                        
+                except PermissionError as e:
+                    # Try to get the process name that has the file locked
+                    process_name = _get_locking_process(file_path)
+                    file_name = os.path.basename(file_path)
+                    if process_name:
+                        errors.append(
+                            f"File '{file_name}' cannot be removed because it is open in {process_name}. "
+                            f"Close {process_name} and try again."
+                        )
+                    else:
+                        errors.append(
+                            f"File '{file_name}' cannot be removed because it is open in another application. "
+                            f"Close the application that has the file open and try again."
+                        )
+                except Exception as e:
+                    file_name = os.path.basename(file_path)
+                    errors.append(f"Error deleting '{file_name}': {str(e)}")
+        
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "kept_count": kept_count,
+            "errors": errors if errors else None
+        }
+    
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error eliminating duplicates: {str(e)}",
+            "deleted_count": deleted_count,
+            "kept_count": kept_count
+        }
 
 
 @app.post("/api/sync/execute")
@@ -1483,8 +2009,9 @@ async def sync_page():
                 </select>
             </div>
             <div class="controls-row">
-                <button onclick="analyzeSync()">Analyze</button>
+                <button onclick="analyzeSync()" id="analyzeBtn">Analyze</button>
                 <button onclick="executeSync()" id="executeBtn" disabled>Execute Sync</button>
+                <div id="eliminateButtonsContainer" style="display: none; margin-left: 10px;"></div>
             </div>
         </div>
         
@@ -1859,7 +2386,7 @@ async def sync_page():
                             // Re-extract drive letter after user input
                             const newDriveMatch = normalizedPath.match(/^([A-Za-z]:)/i);
                             if (!newDriveMatch) {
-                                showMessage('Warning: Path should include drive letter (e.g., D:\\folder). Please enter manually.', 'error');
+                                showMessage('Warning: Path should include drive letter (e.g., D:\\\\folder). Please enter manually.', 'error');
                                 return;
                             }
                         } else {
@@ -2032,7 +2559,7 @@ async def sync_page():
                             // Show prompt dialog to enter full path
                             const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
                                                  'Folder name: ' + folderName + String.fromCharCode(10) + 
-                                                 'Example: D:\\my\\local\\folder';
+                                                 'Example: D:\\\\my\\\\local\\\\folder';
                             const userPath = prompt(promptMessage, suggestedPath);
                             
                             if (userPath && userPath.trim()) {
@@ -2073,7 +2600,7 @@ async def sync_page():
                             
                             // Validate that we have a proper Windows path
                             if (!normalizedPath.match(/^[A-Za-z]:/i) && normalizedPath.length > 0) {
-                                showMessage('Warning: Path does not include drive letter. Please enter full path like D:\\folder', 'error');
+                                showMessage('Warning: Path does not include drive letter. Please enter full path like D:\\\\folder', 'error');
                             }
                             
                             // Save to input
@@ -2278,16 +2805,31 @@ async def sync_page():
                     // Ensure progress UI is visible immediately
                     showProgress();
 
+                    // Declare pollId variable for cleanup
+                    let pollId = null;
+
                     // Start polling every ~2 seconds
                     const pollFn = async () => {
                         try {
+                            // Get fresh token on each poll in case it expires
+                            const freshToken = localStorage.getItem('access_token');
+                            if (!freshToken) {
+                                console.error('[DEBUG] No access token found, stopping polling');
+                                if (pollId) clearInterval(pollId);
+                                return;
+                            }
                             const url = '/api/sync/progress?job_id=' + encodeURIComponent(jobId);
                             console.log('[DEBUG] Polling progress for jobId:', jobId, 'URL:', url);
                             const r = await fetch(url, {
-                                headers: { 'Authorization': 'Bearer ' + currentToken }
+                                headers: { 'Authorization': 'Bearer ' + freshToken }
                             });
                             if (!r.ok) {
                                 console.error('[DEBUG] Poll response not OK:', r.status, r.statusText);
+                                if (r.status === 401) {
+                                    console.error('[DEBUG] Authentication failed, stopping polling');
+                                    if (pollId) clearInterval(pollId);
+                                    showMessage('Session expired. Please login again.', 'error');
+                                }
                                 return;
                             }
                             const p = await r.json();
@@ -2318,7 +2860,7 @@ async def sync_page():
                     await new Promise(resolve => setTimeout(resolve, 200));
                     // Run once immediately so totals appear without waiting
                     await pollFn();
-                    const pollId = setInterval(pollFn, 2000);
+                    pollId = setInterval(pollFn, 2000);
                     console.log('[DEBUG] Polling started with interval ID:', pollId);
                     // Save to container for later cleanup
                     if (progressContainer) progressContainer.dataset.progressPollId = String(pollId);
@@ -2454,6 +2996,238 @@ async def sync_page():
                     const folder1Path = normalizeFolderPath(a.folder1) || 'Folder 1';
                     const folder2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
                     
+                    // Calculate duplicates per folder and space to free up
+                    let folder1Duplicates = 0;
+                    let folder1SpaceToFree = 0;
+                    let folder2Duplicates = 0;
+                    let folder2SpaceToFree = 0;
+                    
+                    if (a.duplicates && a.duplicates.length > 0) {
+                        for (const dup of a.duplicates) {
+                            // Collect all files from both folders
+                            const allFiles = [];
+                            
+                            // Add files from folder1
+                            if (dup.folder1_docs && dup.folder1_docs.length > 0) {
+                                for (const doc of dup.folder1_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        size: doc.size || 0,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 1
+                                    });
+                                }
+                            }
+                            
+                            // Add files from folder2
+                            if (dup.folder2_docs && dup.folder2_docs.length > 0) {
+                                for (const doc of dup.folder2_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        size: doc.size || 0,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 2
+                                    });
+                                }
+                            }
+                            
+                            if (allFiles.length < 2) continue;
+                            
+                            // Find the latest file
+                            let latestFile = null;
+                            let latestDate = null;
+                            
+                            for (const fileInfo of allFiles) {
+                                let compareDate = null;
+                                if (fileInfo.date_modified) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_modified);
+                                    } catch (e) {}
+                                }
+                                if (!compareDate && fileInfo.date_created) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_created);
+                                    } catch (e) {}
+                                }
+                                
+                                if (compareDate && (!latestDate || compareDate > latestDate)) {
+                                    latestDate = compareDate;
+                                    latestFile = fileInfo;
+                                }
+                            }
+                            
+                            // If no date available, keep first file
+                            if (!latestFile) {
+                                latestFile = allFiles[0];
+                            }
+                            
+                            // Calculate space to free per folder
+                            for (const fileInfo of allFiles) {
+                                if (fileInfo.file_path !== latestFile.file_path) {
+                                    if (fileInfo.folder === 1) {
+                                        folder1Duplicates++;
+                                        folder1SpaceToFree += fileInfo.size;
+                                    } else if (fileInfo.folder === 2) {
+                                        folder2Duplicates++;
+                                        folder2SpaceToFree += fileInfo.size;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Create eliminate buttons
+                    const eliminateContainer = document.getElementById('eliminateButtonsContainer');
+                    eliminateContainer.innerHTML = '';
+                    
+                    // Extract drive letter from folder paths
+                    const getDriveLetter = (path) => {
+                        const match = path.match(/^([A-Za-z]):/);
+                        return match ? match[1].toUpperCase() + ':' : '';
+                    };
+                    
+                    const drive1 = getDriveLetter(folder1Path);
+                    const drive2 = getDriveLetter(folder2Path);
+                    
+                    // Button for Folder 1
+                    if (folder1Duplicates > 0) {
+                        const btn1 = document.createElement('button');
+                        const spaceKB = Math.round(folder1SpaceToFree / 1024);
+                        btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${spaceKB.toLocaleString()} KB on disk ${drive1 ? drive1 + '\\\\' : ''}`;
+                        btn1.style.marginLeft = '10px';
+                        btn1.style.padding = '8px 16px';
+                        btn1.style.backgroundColor = '#dc3545';
+                        btn1.style.color = 'white';
+                        btn1.style.border = 'none';
+                        btn1.style.borderRadius = '4px';
+                        btn1.style.cursor = 'pointer';
+                        btn1.style.fontSize = '14px';
+                        btn1.onclick = async () => {
+                            const token = localStorage.getItem('access_token');
+                            if (!token) {
+                                showMessage('Not authenticated. Please login again.', 'error');
+                                window.location.href = '/login';
+                                return;
+                            }
+                            
+                            if (confirm(`Are you sure you want to eliminate ${folder1Duplicates} duplicate file(s) in Folder1 and free up ${formatBytes(folder1SpaceToFree)}? This action cannot be undone.`)) {
+                                btn1.disabled = true;
+                                btn1.textContent = 'Processing...';
+                                try {
+                                    const response = await fetch('/api/sync/eliminate-duplicates-folder', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': 'Bearer ' + token
+                                        },
+                                        body: JSON.stringify({
+                                            duplicates: a.duplicates,
+                                            target_folder: 1,
+                                            folder1: folder1Path,
+                                            folder2: folder2Path
+                                        })
+                                    });
+                                    const result = await response.json();
+                                    if (result.success) {
+                                        showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder1. Freed up ${formatBytes(result.space_freed)}.`, 'success');
+                                        setTimeout(() => {
+                                            const analyzeBtn = document.getElementById('analyzeBtn');
+                                            if (analyzeBtn) {
+                                                analyzeBtn.click();
+                                            } else {
+                                                analyzeSync();
+                                            }
+                                        }, 1000);
+                                    } else {
+                                        showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                        btn1.disabled = false;
+                                        const spaceKB1 = Math.round(folder1SpaceToFree / 1024);
+                                        btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${spaceKB1.toLocaleString()} KB on disk ${drive1 ? drive1 + '\\\\' : ''}`;
+                                    }
+                                } catch (error) {
+                                    showMessage(`Error: ${error.message}`, 'error');
+                                    btn1.disabled = false;
+                                    btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${formatBytes(folder1SpaceToFree)} on disk ${drive1 ? drive1 + '\\\\' : ''}`;
+                                }
+                            }
+                        };
+                        eliminateContainer.appendChild(btn1);
+                    }
+                    
+                    // Button for Folder 2
+                    if (folder2Duplicates > 0) {
+                        const btn2 = document.createElement('button');
+                        const spaceKB = Math.round(folder2SpaceToFree / 1024);
+                        btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${spaceKB.toLocaleString()} KB on disk ${drive2 ? drive2 + '\\\\' : ''}`;
+                        btn2.style.marginLeft = '10px';
+                        btn2.style.padding = '8px 16px';
+                        btn2.style.backgroundColor = '#dc3545';
+                        btn2.style.color = 'white';
+                        btn2.style.border = 'none';
+                        btn2.style.borderRadius = '4px';
+                        btn2.style.cursor = 'pointer';
+                        btn2.style.fontSize = '14px';
+                        btn2.onclick = async () => {
+                            const token = localStorage.getItem('access_token');
+                            if (!token) {
+                                showMessage('Not authenticated. Please login again.', 'error');
+                                window.location.href = '/login';
+                                return;
+                            }
+                            
+                            if (confirm(`Are you sure you want to eliminate ${folder2Duplicates} duplicate file(s) in Folder2 and free up ${formatBytes(folder2SpaceToFree)}? This action cannot be undone.`)) {
+                                btn2.disabled = true;
+                                btn2.textContent = 'Processing...';
+                                try {
+                                    const response = await fetch('/api/sync/eliminate-duplicates-folder', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': 'Bearer ' + token
+                                        },
+                                        body: JSON.stringify({
+                                            duplicates: a.duplicates,
+                                            target_folder: 2,
+                                            folder1: folder1Path,
+                                            folder2: folder2Path
+                                        })
+                                    });
+                                    const result = await response.json();
+                                    if (result.success) {
+                                        showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder2. Freed up ${formatBytes(result.space_freed)}.`, 'success');
+                                        setTimeout(() => {
+                                            const analyzeBtn = document.getElementById('analyzeBtn');
+                                            if (analyzeBtn) {
+                                                analyzeBtn.click();
+                                            } else {
+                                                analyzeSync();
+                                            }
+                                        }, 1000);
+                                    } else {
+                                        showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                        btn2.disabled = false;
+                                        const spaceKB2 = Math.round(folder2SpaceToFree / 1024);
+                                        btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${spaceKB2.toLocaleString()} KB on disk ${drive2 ? drive2 + '\\\\' : ''}`;
+                                    }
+                                } catch (error) {
+                                    showMessage(`Error: ${error.message}`, 'error');
+                                    btn2.disabled = false;
+                                    btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${formatBytes(folder2SpaceToFree)} on disk ${drive2 ? drive2 + '\\\\' : ''}`;
+                                }
+                            }
+                        };
+                        eliminateContainer.appendChild(btn2);
+                    }
+                    
+                    // Show container if there are duplicates
+                    if (folder1Duplicates > 0 || folder2Duplicates > 0) {
+                        eliminateContainer.style.display = 'inline-block';
+                    } else {
+                        eliminateContainer.style.display = 'none';
+                    }
+                    
                     // Update panel headers with actual folder paths
                     const panel1Header = document.querySelector('#syncContainer .panel:first-child .panel-header');
                     const panel2Header = document.querySelector('#syncContainer .panel:last-child .panel-header');
@@ -2467,6 +3241,9 @@ async def sync_page():
                     // Display folder 1 files
                     const panel1 = document.getElementById('panel1');
                     panel1.innerHTML = '';
+                    
+                    const panel2 = document.getElementById('panel2');
+                    panel2.innerHTML = '';
                     
                     let hasContent = false;
                     
@@ -2502,24 +3279,223 @@ async def sync_page():
                         }
                     }
                     
+                    // Add visual separator between sections
+                    if (hasContent && a.duplicates && a.duplicates.length > 0) {
+                        const separator = document.createElement('div');
+                        separator.style.height = '2px';
+                        separator.style.backgroundColor = '#ddd';
+                        separator.style.margin = '20px 0';
+                        separator.style.borderRadius = '1px';
+                        panel1.appendChild(separator);
+                    }
+                    
                     if (a.duplicates && a.duplicates.length > 0) {
-                        hasContent = true;
-                        const header = document.createElement('div');
-                        header.style.fontWeight = 'bold';
-                        header.style.marginTop = '20px';
-                        header.style.marginBottom = '10px';
-                        header.textContent = `Duplicates (${a.duplicates.length}):`;
-                        panel1.appendChild(header);
-                        
-                        a.duplicates.forEach(dup => {
-                            const item = document.createElement('div');
-                            item.className = 'file-item';
-                            item.innerHTML = `
-                                <div class="file-name">${dup.relative_path}</div>
-                                <div class="file-meta">Same name, different content</div>
-                            `;
-                            panel1.appendChild(item);
+                        // Filter duplicates for panel1 (only those where folder1 has a file that would be deleted)
+                        // A duplicate should appear in panel1 if folder1 has a file that's older than folder2's file
+                        const duplicatesPanel1 = a.duplicates.filter(dup => {
+                            if (!dup.folder1_docs || dup.folder1_docs.length === 0) return false;
+                            if (!dup.folder2_docs || dup.folder2_docs.length === 0) return false;
+                            
+                            // Get the latest file from both folders
+                            const allFiles = [];
+                            if (dup.folder1_docs && dup.folder1_docs.length > 0) {
+                                for (const doc of dup.folder1_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 1
+                                    });
+                                }
+                            }
+                            if (dup.folder2_docs && dup.folder2_docs.length > 0) {
+                                for (const doc of dup.folder2_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 2
+                                    });
+                                }
+                            }
+                            
+                            if (allFiles.length < 2) return false;
+                            
+                            // Find the latest file
+                            let latestFile = null;
+                            let latestDate = null;
+                            for (const fileInfo of allFiles) {
+                                let compareDate = null;
+                                if (fileInfo.date_modified) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_modified);
+                                    } catch (e) {}
+                                }
+                                if (!compareDate && fileInfo.date_created) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_created);
+                                    } catch (e) {}
+                                }
+                                if (compareDate && (!latestDate || compareDate > latestDate)) {
+                                    latestDate = compareDate;
+                                    latestFile = fileInfo;
+                                }
+                            }
+                            
+                            if (!latestFile) latestFile = allFiles[0];
+                            
+                            // Show in panel1 if folder1 has a file that's NOT the latest (i.e., would be deleted)
+                            return allFiles.some(f => f.folder === 1 && f.file_path !== latestFile.file_path);
                         });
+                        
+                        if (duplicatesPanel1.length > 0) {
+                            hasContent = true;
+                            const header = document.createElement('div');
+                            header.style.fontWeight = 'bold';
+                            header.style.marginTop = '20px';
+                            header.style.marginBottom = '10px';
+                            header.style.paddingTop = '10px';
+                            header.style.borderTop = '2px solid #007bff';
+                            header.textContent = `Duplicates (${duplicatesPanel1.length}):`;
+                            panel1.appendChild(header);
+                            
+                            // Add button to eliminate duplicates
+                            const eliminateBtn = document.createElement('button');
+                            eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                            eliminateBtn.style.marginBottom = '15px';
+                            eliminateBtn.style.padding = '8px 16px';
+                            eliminateBtn.style.backgroundColor = '#dc3545';
+                            eliminateBtn.style.color = 'white';
+                            eliminateBtn.style.border = 'none';
+                            eliminateBtn.style.borderRadius = '4px';
+                            eliminateBtn.style.cursor = 'pointer';
+                            eliminateBtn.style.fontSize = '14px';
+                            eliminateBtn.onclick = async () => {
+                                // Get current token and folder paths
+                                const token = localStorage.getItem('access_token');
+                                const f1Path = normalizeFolderPath(a.folder1) || 'Folder 1';
+                                const f2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
+                                
+                                if (!token) {
+                                    showMessage('Not authenticated. Please login again.', 'error');
+                                    window.location.href = '/login';
+                                    return;
+                                }
+                                
+                                if (confirm(`Are you sure you want to eliminate ${duplicatesPanel1.length} duplicate(s) and keep only the latest file? This action cannot be undone.`)) {
+                                    eliminateBtn.disabled = true;
+                                    eliminateBtn.textContent = 'Processing...';
+                                    try {
+                                        const response = await fetch('/api/sync/eliminate-duplicates', {
+                                            method: 'POST',
+                                            headers: {
+                                                'Content-Type': 'application/json',
+                                                'Authorization': 'Bearer ' + token
+                                            },
+                                            body: JSON.stringify({
+                                                duplicates: duplicatesPanel1,
+                                                folder1: f1Path,
+                                                folder2: f2Path
+                                            })
+                                        });
+                                        const result = await response.json();
+                                        if (result.success) {
+                                            showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
+                                            // Clear panel1 immediately to show that refresh is happening
+                                            const panel1 = document.getElementById('panel1');
+                                            if (panel1) {
+                                                panel1.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                            }
+                                            // Also clear panel2 for consistency
+                                            const panel2 = document.getElementById('panel2');
+                                            if (panel2) {
+                                                panel2.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                            }
+                                            // Reload analysis to refresh display
+                                            setTimeout(() => {
+                                                const analyzeBtn = document.getElementById('analyzeBtn');
+                                                if (analyzeBtn) {
+                                                    analyzeBtn.click();
+                                                } else {
+                                                    analyzeSync();
+                                                }
+                                            }, 500);
+                                        } else {
+                                            showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                            eliminateBtn.disabled = false;
+                                            eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                                        }
+                                    } catch (error) {
+                                        showMessage(`Error: ${error.message}`, 'error');
+                                        eliminateBtn.disabled = false;
+                                        eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                                    }
+                                }
+                            };
+                        panel1.appendChild(eliminateBtn);
+                        }
+                        
+                        // Show duplicates in panel1 (only those with folder1_docs)
+                        if (duplicatesPanel1 && duplicatesPanel1.length > 0) {
+                            duplicatesPanel1.forEach(dup => {
+                                const item1 = document.createElement('div');
+                                item1.className = 'file-item';
+                                
+                                // Get first doc from each folder (for duplicates, typically one per folder)
+                                const doc1 = dup.folder1_docs && dup.folder1_docs.length > 0 ? dup.folder1_docs[0] : null;
+                                const doc2 = dup.folder2_docs && dup.folder2_docs.length > 0 ? dup.folder2_docs[0] : null;
+                                
+                                // Get file sizes (individual file size, not sum)
+                                const size1 = doc1 ? (doc1.size || 0) : 0;
+                                const size2 = doc2 ? (doc2.size || 0) : 0;
+                                
+                                // Get MD5 hashes to show why files are different
+                                const md5_1 = doc1 && doc1.md5_hash ? doc1.md5_hash.substring(0, 16) + '...' : 'N/A';
+                                const md5_2 = doc2 && doc2.md5_hash ? doc2.md5_hash.substring(0, 16) + '...' : 'N/A';
+                                
+                                // Check if MD5 hashes are the same (exact match) or different (duplicate)
+                                const md5Match = doc1 && doc2 && doc1.md5_hash === doc2.md5_hash;
+                                const duplicateType = md5Match 
+                                    ? 'Same name, same content (MD5 match) - different dates only'
+                                    : 'Same name, different content (different MD5 hash)';
+                                
+                                // If there are multiple files with same name, show count
+                                const count1 = dup.folder1_docs ? dup.folder1_docs.length : 0;
+                                const count2 = dup.folder2_docs ? dup.folder2_docs.length : 0;
+                                
+                                const date1Created = doc1 && doc1.date_created
+                                    ? new Date(doc1.date_created).toLocaleDateString()
+                                    : 'N/A';
+                                const date1Modified = doc1 && doc1.date_modified
+                                    ? new Date(doc1.date_modified).toLocaleDateString()
+                                    : 'N/A';
+                                const date2Created = doc2 && doc2.date_created
+                                    ? new Date(doc2.date_created).toLocaleDateString()
+                                    : 'N/A';
+                                const date2Modified = doc2 && doc2.date_modified
+                                    ? new Date(doc2.date_modified).toLocaleDateString()
+                                    : 'N/A';
+                                
+                                // Build size display - show count if multiple files
+                                const size1Display = count1 > 1 
+                                    ? `${formatBytes(size1)} (${count1} files)`
+                                    : formatBytes(size1);
+                                const size2Display = count2 > 1 
+                                    ? `${formatBytes(size2)} (${count2} files)`
+                                    : formatBytes(size2);
+                                
+                                item1.innerHTML = `
+                                    <div class="file-name">${dup.relative_path}</div>
+                                    <div class="file-meta">
+                                        ${duplicateType}<br>
+                                        <strong>Folder 1:</strong> ${size1Display} | MD5: ${md5_1} | Created: ${date1Created} | Modified: ${date1Modified}<br>
+                                        <strong>Folder 2:</strong> ${size2Display} | MD5: ${md5_2} | Created: ${date2Created} | Modified: ${date2Modified}
+                                    </div>
+                                `;
+                                
+                                panel1.appendChild(item1);
+                            });
+                        }
                     }
                     
                     // Check if folders are identical (no differences)
@@ -2564,9 +3540,7 @@ async def sync_page():
                     }
                     
                     // Display folder 2 files
-                    const panel2 = document.getElementById('panel2');
-                    panel2.innerHTML = '';
-                    
+                    // panel2 is already defined above, just reset hasContent
                     hasContent = false;
                     
                     if (a.missing_in_folder1 && a.missing_in_folder1.length > 0) {
@@ -2598,6 +3572,224 @@ async def sync_page():
                             moreIndicator.style.borderTop = '1px solid #eee';
                             moreIndicator.textContent = `... and ${totalCount - displayedCount} more files`;
                             panel2.appendChild(moreIndicator);
+                        }
+                    }
+                    
+                    // Add visual separator between sections for panel2
+                    if (hasContent && a.duplicates && a.duplicates.length > 0) {
+                        const separator2 = document.createElement('div');
+                        separator2.style.height = '2px';
+                        separator2.style.backgroundColor = '#ddd';
+                        separator2.style.margin = '20px 0';
+                        separator2.style.borderRadius = '1px';
+                        panel2.appendChild(separator2);
+                    }
+                    
+                    // Add duplicates section to panel2 (only those where folder2 has a file that would be deleted)
+                    if (a.duplicates && a.duplicates.length > 0) {
+                        // Filter duplicates for panel2 (only those where folder2 has a file that would be deleted)
+                        // A duplicate should appear in panel2 if folder2 has a file that's older than folder1's file
+                        const duplicatesPanel2 = a.duplicates.filter(dup => {
+                            if (!dup.folder1_docs || dup.folder1_docs.length === 0) return false;
+                            if (!dup.folder2_docs || dup.folder2_docs.length === 0) return false;
+                            
+                            // Get the latest file from both folders
+                            const allFiles = [];
+                            if (dup.folder1_docs && dup.folder1_docs.length > 0) {
+                                for (const doc of dup.folder1_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 1
+                                    });
+                                }
+                            }
+                            if (dup.folder2_docs && dup.folder2_docs.length > 0) {
+                                for (const doc of dup.folder2_docs) {
+                                    allFiles.push({
+                                        file_path: doc.file_path,
+                                        date_modified: doc.date_modified,
+                                        date_created: doc.date_created,
+                                        folder: 2
+                                    });
+                                }
+                            }
+                            
+                            if (allFiles.length < 2) return false;
+                            
+                            // Find the latest file
+                            let latestFile = null;
+                            let latestDate = null;
+                            for (const fileInfo of allFiles) {
+                                let compareDate = null;
+                                if (fileInfo.date_modified) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_modified);
+                                    } catch (e) {}
+                                }
+                                if (!compareDate && fileInfo.date_created) {
+                                    try {
+                                        compareDate = new Date(fileInfo.date_created);
+                                    } catch (e) {}
+                                }
+                                if (compareDate && (!latestDate || compareDate > latestDate)) {
+                                    latestDate = compareDate;
+                                    latestFile = fileInfo;
+                                }
+                            }
+                            
+                            if (!latestFile) latestFile = allFiles[0];
+                            
+                            // Show in panel2 if folder2 has a file that's NOT the latest (i.e., would be deleted)
+                            return allFiles.some(f => f.folder === 2 && f.file_path !== latestFile.file_path);
+                        });
+                        
+                        if (duplicatesPanel2.length > 0) {
+                            hasContent = true;
+                            const header2 = document.createElement('div');
+                            header2.style.fontWeight = 'bold';
+                            header2.style.marginTop = '20px';
+                            header2.style.marginBottom = '10px';
+                            header2.style.paddingTop = '10px';
+                            header2.style.borderTop = '2px solid #007bff';
+                            header2.textContent = `Duplicates (${duplicatesPanel2.length}):`;
+                            panel2.appendChild(header2);
+                            
+                            // Add button to eliminate duplicates for panel2
+                            const eliminateBtn2 = document.createElement('button');
+                            eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
+                            eliminateBtn2.style.marginBottom = '15px';
+                            eliminateBtn2.style.padding = '8px 16px';
+                            eliminateBtn2.style.backgroundColor = '#dc3545';
+                            eliminateBtn2.style.color = 'white';
+                            eliminateBtn2.style.border = 'none';
+                            eliminateBtn2.style.borderRadius = '4px';
+                            eliminateBtn2.style.cursor = 'pointer';
+                            eliminateBtn2.style.fontSize = '14px';
+                            eliminateBtn2.onclick = async () => {
+                                // Get current token and folder paths
+                                const token = localStorage.getItem('access_token');
+                                const f1Path = normalizeFolderPath(a.folder1) || 'Folder 1';
+                                const f2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
+                                
+                                if (!token) {
+                                    showMessage('Not authenticated. Please login again.', 'error');
+                                    window.location.href = '/login';
+                                    return;
+                                }
+                                
+                                if (confirm(`Are you sure you want to eliminate ${duplicatesPanel2.length} duplicate(s) and keep only the latest file? This action cannot be undone.`)) {
+                                    eliminateBtn2.disabled = true;
+                                    eliminateBtn2.textContent = 'Processing...';
+                                    try {
+                                        const response = await fetch('/api/sync/eliminate-duplicates', {
+                                            method: 'POST',
+                                            headers: {
+                                                'Content-Type': 'application/json',
+                                                'Authorization': 'Bearer ' + token
+                                            },
+                                            body: JSON.stringify({
+                                                duplicates: duplicatesPanel2,
+                                                folder1: f1Path,
+                                                folder2: f2Path
+                                            })
+                                        });
+                                        const result = await response.json();
+                                        if (result.success) {
+                                            showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
+                                            // Clear panel2 immediately to show that refresh is happening
+                                            const panel2 = document.getElementById('panel2');
+                                            if (panel2) {
+                                                panel2.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                            }
+                                            // Also clear panel1 for consistency
+                                            const panel1 = document.getElementById('panel1');
+                                            if (panel1) {
+                                                panel1.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                            }
+                                            // Reload analysis to refresh display
+                                            setTimeout(() => {
+                                                const analyzeBtn = document.getElementById('analyzeBtn');
+                                                if (analyzeBtn) {
+                                                    analyzeBtn.click();
+                                                } else {
+                                                    analyzeSync();
+                                                }
+                                            }, 500);
+                                        } else {
+                                            showMessage(`Error: ${result.error || 'Failed to eliminate duplicates'}`, 'error');
+                                            eliminateBtn2.disabled = false;
+                                            eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
+                                        }
+                                    } catch (error) {
+                                        showMessage(`Error: ${error.message}`, 'error');
+                                        eliminateBtn2.disabled = false;
+                                        eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
+                                    }
+                                }
+                            };
+                            panel2.appendChild(eliminateBtn2);
+                            
+                            // Show duplicates in panel2 (only those with folder2_docs)
+                            duplicatesPanel2.forEach(dup => {
+                                const item2 = document.createElement('div');
+                                item2.className = 'file-item';
+                                
+                                // Get first doc from each folder (for duplicates, typically one per folder)
+                                const doc1 = dup.folder1_docs && dup.folder1_docs.length > 0 ? dup.folder1_docs[0] : null;
+                                const doc2 = dup.folder2_docs && dup.folder2_docs.length > 0 ? dup.folder2_docs[0] : null;
+                                
+                                // Get file sizes (individual file size, not sum)
+                                const size1 = doc1 ? (doc1.size || 0) : 0;
+                                const size2 = doc2 ? (doc2.size || 0) : 0;
+                                
+                                // Get MD5 hashes to show why files are different
+                                const md5_1 = doc1 && doc1.md5_hash ? doc1.md5_hash.substring(0, 16) + '...' : 'N/A';
+                                const md5_2 = doc2 && doc2.md5_hash ? doc2.md5_hash.substring(0, 16) + '...' : 'N/A';
+                                
+                                // Check if MD5 hashes are the same (exact match) or different (duplicate)
+                                const md5Match = doc1 && doc2 && doc1.md5_hash === doc2.md5_hash;
+                                const duplicateType = md5Match 
+                                    ? 'Same name, same content (MD5 match) - different dates only'
+                                    : 'Same name, different content (different MD5 hash)';
+                                
+                                // If there are multiple files with same name, show count
+                                const count1 = dup.folder1_docs ? dup.folder1_docs.length : 0;
+                                const count2 = dup.folder2_docs ? dup.folder2_docs.length : 0;
+                                
+                                const date1Created = doc1 && doc1.date_created
+                                    ? new Date(doc1.date_created).toLocaleDateString()
+                                    : 'N/A';
+                                const date1Modified = doc1 && doc1.date_modified
+                                    ? new Date(doc1.date_modified).toLocaleDateString()
+                                    : 'N/A';
+                                const date2Created = doc2 && doc2.date_created
+                                    ? new Date(doc2.date_created).toLocaleDateString()
+                                    : 'N/A';
+                                const date2Modified = doc2 && doc2.date_modified
+                                    ? new Date(doc2.date_modified).toLocaleDateString()
+                                    : 'N/A';
+                                
+                                // Build size display - show count if multiple files
+                                const size1Display = count1 > 1 
+                                    ? `${formatBytes(size1)} (${count1} files)`
+                                    : formatBytes(size1);
+                                const size2Display = count2 > 1 
+                                    ? `${formatBytes(size2)} (${count2} files)`
+                                    : formatBytes(size2);
+                                
+                                item2.innerHTML = `
+                                    <div class="file-name">${dup.relative_path}</div>
+                                    <div class="file-meta">
+                                        ${duplicateType}<br>
+                                        <strong>Folder 1:</strong> ${size1Display} | MD5: ${md5_1} | Created: ${date1Created} | Modified: ${date1Modified}<br>
+                                        <strong>Folder 2:</strong> ${size2Display} | MD5: ${md5_2} | Created: ${date2Created} | Modified: ${date2Modified}
+                                    </div>
+                                `;
+                                
+                                panel2.appendChild(item2);
+                            });
                         }
                     }
                     
