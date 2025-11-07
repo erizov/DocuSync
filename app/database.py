@@ -97,11 +97,33 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def init_db(db_engine=None) -> None:
-    """Initialize database tables."""
+def migrate_add_role_column(db_engine=None) -> None:
+    """Add role column to users table if it doesn't exist."""
     db_engine = db_engine or engine
-    Base.metadata.create_all(bind=db_engine)
-    init_fts5(db_engine)
+    conn = db_engine.connect()
+    try:
+        # Check if role column exists
+        cursor = conn.execute(text(
+            "PRAGMA table_info(users)"
+        ))
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'role' not in columns:
+            # Add role column with default value
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'readonly'"
+            ))
+            # Update existing users to admin role (for backward compatibility)
+            conn.execute(text(
+                "UPDATE users SET role = 'admin' WHERE role IS NULL OR role = ''"
+            ))
+            conn.commit()
+            print("Added 'role' column to users table")
+    except Exception as e:
+        print(f"Warning: Could not migrate users table: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def init_fts5(db_engine=None) -> None:
