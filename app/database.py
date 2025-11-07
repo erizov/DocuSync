@@ -97,6 +97,14 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def init_db(db_engine=None) -> None:
+    """Initialize database tables."""
+    db_engine = db_engine or engine
+    Base.metadata.create_all(bind=db_engine)
+    migrate_add_role_column(db_engine)
+    init_fts5(db_engine)
+
+
 def migrate_add_role_column(db_engine=None) -> None:
     """Add role column to users table if it doesn't exist."""
     db_engine = db_engine or engine
@@ -116,10 +124,10 @@ def migrate_add_role_column(db_engine=None) -> None:
             conn.commit()
             print("Added 'role' column to users table")
         
-        # Update existing users to admin role (for backward compatibility)
-        # This ensures existing users get admin privileges
+        # Update existing users to admin role only if they don't have a role set
+        # This ensures existing users get admin privileges but doesn't overwrite existing roles
         conn.execute(text(
-            "UPDATE users SET role = 'admin' WHERE role = 'readonly' OR role IS NULL OR role = ''"
+            "UPDATE users SET role = 'admin' WHERE role IS NULL OR role = ''"
         ))
         conn.commit()
     except Exception as e:
