@@ -3362,6 +3362,33 @@ async def sync_page():
                 }
             }
             
+            // Setup button event handlers (must be called after functions are defined)
+            function setupButtonHandlers() {
+                const analyzeBtn = document.getElementById('analyzeBtn');
+                if (analyzeBtn) {
+                    analyzeBtn.addEventListener('click', function() {
+                        if (window.analyzeSync) {
+                            window.analyzeSync();
+                        } else {
+                            console.error('analyzeSync function not defined');
+                            alert('Error: analyzeSync function not loaded. Please refresh the page.');
+                        }
+                    });
+                }
+                
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) {
+                    executeBtn.addEventListener('click', function() {
+                        if (window.executeSync) {
+                            window.executeSync();
+                        } else {
+                            console.error('executeSync function not defined');
+                            alert('Error: executeSync function not loaded. Please refresh the page.');
+                        }
+                    });
+                }
+            }
+            
             // Apply translations on page load
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', function() {
