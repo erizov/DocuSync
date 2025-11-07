@@ -91,6 +91,29 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class UserCreate(BaseModel):
+    """User creation model."""
+
+    username: str
+    password: str
+    role: str  # readonly, full, admin
+
+
+class UserResponse(BaseModel):
+    """User response model."""
+
+    id: int
+    username: str
+    role: str
+    is_active: bool
+    created_at: str
+
+    class Config:
+        """Pydantic config."""
+
+        from_attributes = True
+
+
 class ActivityResponse(BaseModel):
     """Activity response model."""
 
