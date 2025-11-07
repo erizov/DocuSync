@@ -4116,7 +4116,7 @@ async def sync_page():
                             const needsSync = Number(p.needs_sync) || 0;
                             console.log('[DEBUG] Parsed values:', {scanned, equals, needsSync});
                             const dots = '.'.repeat(Math.floor((Date.now()/1000)%4));
-                            const line = `Scanning folders and analyzing${dots}  —  Scanned: ${scanned}  Equals: ${equals}  Needs sync: ${needsSync}`;
+                            const line = 'Scanning folders and analyzing' + dots + '  —  Scanned: ' + scanned + '  Equals: ' + equals + '  Needs sync: ' + needsSync;
                             const progressTextEl = document.getElementById('progressText');
                             if (progressTextEl) {
                                 progressTextEl.textContent = line;
