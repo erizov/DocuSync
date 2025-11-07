@@ -2669,8 +2669,8 @@ async def sync_page():
                 </select>
             </div>
             <div class="controls-row">
-                <button onclick="analyzeSync()" id="analyzeBtn">Analyze</button>
-                <button onclick="executeSync()" id="executeBtn" disabled>Execute Sync</button>
+                <button id="analyzeBtn">Analyze</button>
+                <button id="executeBtn" disabled>Execute Sync</button>
                 <div id="eliminateButtonsContainer" style="display: none; margin-left: 10px;"></div>
             </div>
         </div>
