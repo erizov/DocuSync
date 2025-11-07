@@ -99,6 +99,14 @@ class UserCreate(BaseModel):
     role: str  # readonly, full, admin
 
 
+class UserUpdate(BaseModel):
+    """User update model."""
+
+    password: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class UserResponse(BaseModel):
     """User response model."""
 
@@ -2141,6 +2149,65 @@ async def create_user(
     )
 
 
+@app.put("/api/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Update a user. Admin only."""
+    from app.auth import get_password_hash
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Prevent deactivating yourself
+    if user.id == current_user.id and user_data.is_active is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot deactivate your own account"
+        )
+    
+    # Update password if provided
+    if user_data.password is not None:
+        user.hashed_password = get_password_hash(user_data.password)
+    
+    # Update role if provided
+    if user_data.role is not None:
+        if user_data.role not in ['readonly', 'full', 'admin']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid role. Must be 'readonly', 'full', or 'admin'"
+            )
+        # Prevent changing your own role from admin
+        if user.id == current_user.id and user_data.role != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot change your own role from admin"
+            )
+        user.role = user_data.role
+    
+    # Update active status if provided
+    if user_data.is_active is not None:
+        user.is_active = user_data.is_active
+    
+    db.commit()
+    db.refresh(user)
+    
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at.isoformat() if user.created_at else ""
+    )
+
+
 @app.delete("/api/users/{user_id}")
 async def delete_user(
     user_id: int,
@@ -2799,7 +2866,35 @@ async def sync_page():
                     filesOnlyInSimple: 'Files only in {0} ({1}):',
                     andMoreFiles: '... and {0} more files',
                     someFilesCouldNotBeDeleted: 'Some files could not be deleted:\\n\\n{0}',
-                    failedToEliminate: 'Failed to eliminate duplicates'
+                    failedToEliminate: 'Failed to eliminate duplicates',
+                    userManagement: 'User Management',
+                    close: 'Close',
+                    addNewUser: 'Add New User',
+                    users: 'Users',
+                    username: 'Username',
+                    password: 'Password',
+                    role: 'Role',
+                    active: 'Active',
+                    actions: 'Actions',
+                    edit: 'Edit',
+                    delete: 'Delete',
+                    currentUser: 'Current user',
+                    addUser: 'Add User',
+                    readOnly: 'Read Only',
+                    fullAccess: 'Full Access',
+                    admin: 'Admin',
+                    yes: 'Yes',
+                    no: 'No',
+                    editUser: 'Edit User: {0}',
+                    newPassword: 'New Password (leave blank to keep current)',
+                    save: 'Save',
+                    cancel: 'Cancel',
+                    userCreatedSuccessfully: 'User created successfully',
+                    userUpdatedSuccessfully: 'User updated successfully',
+                    userDeletedSuccessfully: 'User deleted successfully',
+                    confirmDeleteUser: 'Are you sure you want to delete this user?',
+                    logout: 'Logout',
+                    loggedInAs: 'Logged in as: {0} ({1})'
                 },
                 de: {
                     title: 'DocuSync - Ordner-Synchronisation',
@@ -2840,7 +2935,35 @@ async def sync_page():
                     filesOnlyInSimple: 'Dateien nur in {0} ({1}):',
                     andMoreFiles: '... und {0} weitere Dateien',
                     someFilesCouldNotBeDeleted: 'Einige Dateien konnten nicht gelöscht werden:\\n\\n{0}',
-                    failedToEliminate: 'Duplikate entfernen fehlgeschlagen'
+                    failedToEliminate: 'Duplikate entfernen fehlgeschlagen',
+                    userManagement: 'Benutzerverwaltung',
+                    close: 'Schließen',
+                    addNewUser: 'Neuen Benutzer hinzufügen',
+                    users: 'Benutzer',
+                    username: 'Benutzername',
+                    password: 'Passwort',
+                    role: 'Rolle',
+                    active: 'Aktiv',
+                    actions: 'Aktionen',
+                    edit: 'Bearbeiten',
+                    delete: 'Löschen',
+                    currentUser: 'Aktueller Benutzer',
+                    addUser: 'Benutzer hinzufügen',
+                    readOnly: 'Nur Lesen',
+                    fullAccess: 'Vollzugriff',
+                    admin: 'Administrator',
+                    yes: 'Ja',
+                    no: 'Nein',
+                    editUser: 'Benutzer bearbeiten: {0}',
+                    newPassword: 'Neues Passwort (leer lassen, um aktuelles beizubehalten)',
+                    save: 'Speichern',
+                    cancel: 'Abbrechen',
+                    userCreatedSuccessfully: 'Benutzer erfolgreich erstellt',
+                    userUpdatedSuccessfully: 'Benutzer erfolgreich aktualisiert',
+                    userDeletedSuccessfully: 'Benutzer erfolgreich gelöscht',
+                    confirmDeleteUser: 'Sind Sie sicher, dass Sie diesen Benutzer löschen möchten?',
+                    logout: 'Abmelden',
+                    loggedInAs: 'Angemeldet als: {0} ({1})'
                 },
                 fr: {
                     title: 'DocuSync - Synchronisation de dossiers',
@@ -2876,12 +2999,40 @@ async def sync_page():
                     eliminateDuplicates: 'Supprimer les doublons et ne garder que le fichier le plus récent',
                     eliminateDuplicatesFolder: 'Supprimer {0} fichier(s) en double dans {1} et libérer {2} Ko sur le disque {3}',
                     processing: 'Traitement en cours...',
-                    refreshingAnalysis: 'Actualisation de l\'analyse...',
+                    refreshingAnalysis: 'Actualisation de l\\'analyse...',
                     filesOnlyIn: 'Fichiers uniquement dans {0} (affichage de {1} sur {2}):',
                     filesOnlyInSimple: 'Fichiers uniquement dans {0} ({1}):',
                     andMoreFiles: '... et {0} autres fichiers',
-                    someFilesCouldNotBeDeleted: 'Certains fichiers n\'ont pas pu être supprimés:\\n\\n{0}',
-                    failedToEliminate: 'Échec de la suppression des doublons'
+                    someFilesCouldNotBeDeleted: 'Certains fichiers n\\'ont pas pu être supprimés:\\n\\n{0}',
+                    failedToEliminate: 'Échec de la suppression des doublons',
+                    userManagement: 'Gestion des utilisateurs',
+                    close: 'Fermer',
+                    addNewUser: 'Ajouter un nouvel utilisateur',
+                    users: 'Utilisateurs',
+                    username: 'Nom d\\'utilisateur',
+                    password: 'Mot de passe',
+                    role: 'Rôle',
+                    active: 'Actif',
+                    actions: 'Actions',
+                    edit: 'Modifier',
+                    delete: 'Supprimer',
+                    currentUser: 'Utilisateur actuel',
+                    addUser: 'Ajouter un utilisateur',
+                    readOnly: 'Lecture seule',
+                    fullAccess: 'Accès complet',
+                    admin: 'Administrateur',
+                    yes: 'Oui',
+                    no: 'Non',
+                    editUser: 'Modifier l\\'utilisateur: {0}',
+                    newPassword: 'Nouveau mot de passe (laisser vide pour conserver l\\'actuel)',
+                    save: 'Enregistrer',
+                    cancel: 'Annuler',
+                    userCreatedSuccessfully: 'Utilisateur créé avec succès',
+                    userUpdatedSuccessfully: 'Utilisateur mis à jour avec succès',
+                    userDeletedSuccessfully: 'Utilisateur supprimé avec succès',
+                    confirmDeleteUser: 'Êtes-vous sûr de vouloir supprimer cet utilisateur?',
+                    logout: 'Déconnexion',
+                    loggedInAs: 'Connecté en tant que: {0} ({1})'
                 },
                 es: {
                     title: 'DocuSync - Sincronización de carpetas',
@@ -2922,7 +3073,35 @@ async def sync_page():
                     filesOnlyInSimple: 'Archivos solo en {0} ({1}):',
                     andMoreFiles: '... y {0} archivos más',
                     someFilesCouldNotBeDeleted: 'Algunos archivos no pudieron ser eliminados:\\n\\n{0}',
-                    failedToEliminate: 'Error al eliminar duplicados'
+                    failedToEliminate: 'Error al eliminar duplicados',
+                    userManagement: 'Gestión de usuarios',
+                    close: 'Cerrar',
+                    addNewUser: 'Agregar nuevo usuario',
+                    users: 'Usuarios',
+                    username: 'Nombre de usuario',
+                    password: 'Contraseña',
+                    role: 'Rol',
+                    active: 'Activo',
+                    actions: 'Acciones',
+                    edit: 'Editar',
+                    delete: 'Eliminar',
+                    currentUser: 'Usuario actual',
+                    addUser: 'Agregar usuario',
+                    readOnly: 'Solo lectura',
+                    fullAccess: 'Acceso completo',
+                    admin: 'Administrador',
+                    yes: 'Sí',
+                    no: 'No',
+                    editUser: 'Editar usuario: {0}',
+                    newPassword: 'Nueva contraseña (dejar en blanco para mantener la actual)',
+                    save: 'Guardar',
+                    cancel: 'Cancelar',
+                    userCreatedSuccessfully: 'Usuario creado exitosamente',
+                    userUpdatedSuccessfully: 'Usuario actualizado exitosamente',
+                    userDeletedSuccessfully: 'Usuario eliminado exitosamente',
+                    confirmDeleteUser: '¿Está seguro de que desea eliminar este usuario?',
+                    logout: 'Cerrar sesión',
+                    loggedInAs: 'Conectado como: {0} ({1})'
                 },
                 it: {
                     title: 'DocuSync - Sincronizzazione cartelle',
@@ -2946,10 +3125,10 @@ async def sync_page():
                     analysisComplete: 'Analisi completata: {0} file solo in {1}, {2} file solo in {3}, {4} duplicati',
                     analysisCompleteSimple: 'Analisi completata',
                     analysisFailed: 'Analisi fallita: {0}',
-                    notAuthenticated: 'Non autenticato. Effettuare nuovamente l\'accesso.',
+                    notAuthenticated: 'Non autenticato. Effettuare nuovamente l\\'accesso.',
                     pleaseEnterBothFolders: 'Inserire entrambe le cartelle',
                     analyzing: 'Analisi in corso...',
-                    sessionExpired: 'Sessione scaduta. Effettuare nuovamente l\'accesso.',
+                    sessionExpired: 'Sessione scaduta. Effettuare nuovamente l\\'accesso.',
                     error: 'Errore: {0}',
                     successfullyEliminated: 'Eliminati con successo {0} file duplicato(i). Mantenuti {1} file più recente(i).',
                     successfullyEliminatedFolder: 'Eliminati con successo {0} file duplicato(i) in {1}. Liberati {2}.',
@@ -2963,7 +3142,35 @@ async def sync_page():
                     filesOnlyInSimple: 'File solo in {0} ({1}):',
                     andMoreFiles: '... e {0} altri file',
                     someFilesCouldNotBeDeleted: 'Alcuni file non sono stati eliminati:\\n\\n{0}',
-                    failedToEliminate: 'Eliminazione duplicati fallita'
+                    failedToEliminate: 'Eliminazione duplicati fallita',
+                    userManagement: 'Gestione utenti',
+                    close: 'Chiudi',
+                    addNewUser: 'Aggiungi nuovo utente',
+                    users: 'Utenti',
+                    username: 'Nome utente',
+                    password: 'Password',
+                    role: 'Ruolo',
+                    active: 'Attivo',
+                    actions: 'Azioni',
+                    edit: 'Modifica',
+                    delete: 'Elimina',
+                    currentUser: 'Utente corrente',
+                    addUser: 'Aggiungi utente',
+                    readOnly: 'Sola lettura',
+                    fullAccess: 'Accesso completo',
+                    admin: 'Amministratore',
+                    yes: 'Sì',
+                    no: 'No',
+                    editUser: 'Modifica utente: {0}',
+                    newPassword: 'Nuova password (lasciare vuoto per mantenere quella attuale)',
+                    save: 'Salva',
+                    cancel: 'Annulla',
+                    userCreatedSuccessfully: 'Utente creato con successo',
+                    userUpdatedSuccessfully: 'Utente aggiornato con successo',
+                    userDeletedSuccessfully: 'Utente eliminato con successo',
+                    confirmDeleteUser: 'Sei sicuro di voler eliminare questo utente?',
+                    logout: 'Esci',
+                    loggedInAs: 'Connesso come: {0} ({1})'
                 },
                 ru: {
                     title: 'DocuSync - Синхронизация папок',
@@ -3004,7 +3211,35 @@ async def sync_page():
                     filesOnlyInSimple: 'Файлы только в {0} ({1}):',
                     andMoreFiles: '... и еще {0} файлов',
                     someFilesCouldNotBeDeleted: 'Некоторые файлы не удалось удалить:\\n\\n{0}',
-                    failedToEliminate: 'Не удалось удалить дубликаты'
+                    failedToEliminate: 'Не удалось удалить дубликаты',
+                    userManagement: 'Управление пользователями',
+                    close: 'Закрыть',
+                    addNewUser: 'Добавить нового пользователя',
+                    users: 'Пользователи',
+                    username: 'Имя пользователя',
+                    password: 'Пароль',
+                    role: 'Роль',
+                    active: 'Активен',
+                    actions: 'Действия',
+                    edit: 'Редактировать',
+                    delete: 'Удалить',
+                    currentUser: 'Текущий пользователь',
+                    addUser: 'Добавить пользователя',
+                    readOnly: 'Только чтение',
+                    fullAccess: 'Полный доступ',
+                    admin: 'Администратор',
+                    yes: 'Да',
+                    no: 'Нет',
+                    editUser: 'Редактировать пользователя: {0}',
+                    newPassword: 'Новый пароль (оставить пустым, чтобы сохранить текущий)',
+                    save: 'Сохранить',
+                    cancel: 'Отмена',
+                    userCreatedSuccessfully: 'Пользователь успешно создан',
+                    userUpdatedSuccessfully: 'Пользователь успешно обновлен',
+                    userDeletedSuccessfully: 'Пользователь успешно удален',
+                    confirmDeleteUser: 'Вы уверены, что хотите удалить этого пользователя?',
+                    logout: 'Выйти',
+                    loggedInAs: 'Вход выполнен как: {0} ({1})'
                 }
             };
             
@@ -3079,6 +3314,26 @@ async def sync_page():
                 
                 const executeBtn = document.getElementById('executeBtn');
                 if (executeBtn) executeBtn.textContent = t.executeSync;
+                
+                // Update User Management button
+                const userMgmtBtn = document.getElementById('userMgmtBtn');
+                if (userMgmtBtn) {
+                    userMgmtBtn.textContent = t.userManagement || 'User Management';
+                }
+                
+                // Update logout button
+                const logoutBtn = document.getElementById('logoutBtn');
+                if (logoutBtn) {
+                    logoutBtn.textContent = t.logout || 'Logout';
+                }
+                
+                // Update logged in as text
+                const userInfo = document.querySelector('.user-info span');
+                if (userInfo) {
+                    const username = localStorage.getItem('username') || '';
+                    const userRole = localStorage.getItem('user_role') || 'readonly';
+                    userInfo.textContent = formatMessage('loggedInAs', username, userRole);
+                }
                 
                 // Update browse buttons
                 const browseBtns = document.querySelectorAll('.browse-btn');
@@ -3167,7 +3422,7 @@ async def sync_page():
                          text.includes('Duplicati') || text.includes('Дубликаты')) &&
                         text.includes('(') && text.includes(')')) {
                         // Extract count from header
-                        const match = text.match(/\((\d+)\)/);
+                        const match = text.match(/\\\\(\\d+)\\)/);
                         if (match) {
                             header.textContent = `${t.duplicates} (${match[1]}):`;
                         }
@@ -3186,23 +3441,224 @@ async def sync_page():
                         currentLanguage = this.value;
                         localStorage.setItem('docuSync_language', currentLanguage);
                         applyTranslations(currentLanguage);
+                        updateUserManagementModal();
                     });
                 }
                 applyTranslations(currentLanguage);
+            }
+            
+            // Function to update User Management modal when language changes
+            function updateUserManagementModal() {
+                const t = translations[currentLanguage] || translations.en;
+                
+                // Update User Management button text if it exists
+                const userMgmtBtn = document.getElementById('userMgmtBtn');
+                if (userMgmtBtn) {
+                    userMgmtBtn.textContent = t.userManagement || 'User Management';
+                }
+                
+                // Check for main User Management modal (z-index: 1000)
+                const mainModal = document.querySelector('div[style*="position: fixed"][style*="z-index: 1000"]');
+                if (mainModal) {
+                    const userList = mainModal.querySelector('#userList');
+                    const addUserForm = mainModal.querySelector('#addUserForm');
+                    if (userList && addUserForm) {
+                        // Update modal title
+                        const title = mainModal.querySelector('h2');
+                        if (title) title.textContent = t.userManagement;
+                        
+                        // Update close button
+                        const closeBtn = mainModal.querySelector('#closeUserMgmtModal');
+                        if (closeBtn) closeBtn.textContent = t.close;
+                        
+                        // Update "Add New User" heading
+                        const addNewUserHeading = mainModal.querySelector('h3');
+                        if (addNewUserHeading) addNewUserHeading.textContent = t.addNewUser;
+                        
+                        // Update form labels
+                        const labels = mainModal.querySelectorAll('#addUserForm label');
+                        labels.forEach((label, index) => {
+                            if (index === 0) {
+                                label.textContent = t.username + ':';
+                            } else if (index === 1) {
+                                label.textContent = t.password + ':';
+                            } else if (index === 2) {
+                                label.textContent = t.role + ':';
+                            }
+                        });
+                        
+                        // Update input placeholders
+                        const usernameInput = mainModal.querySelector('#newUsername');
+                        if (usernameInput) usernameInput.placeholder = t.username;
+                        
+                        const passwordInput = mainModal.querySelector('#newPassword');
+                        if (passwordInput) passwordInput.placeholder = t.password;
+                        
+                        // Update role select options
+                        const roleSelect = mainModal.querySelector('#newRole');
+                        if (roleSelect) {
+                            const currentValue = roleSelect.value;
+                            roleSelect.innerHTML = `
+                                <option value="readonly">${t.readOnly}</option>
+                                <option value="full">${t.fullAccess}</option>
+                                <option value="admin">${t.admin}</option>
+                            `;
+                            roleSelect.value = currentValue; // Restore selected value
+                        }
+                        
+                        // Update submit button
+                        const submitBtn = mainModal.querySelector('#addUserForm button[type="submit"]');
+                        if (submitBtn) submitBtn.textContent = t.addUser;
+                        
+                        // Reload users list to update translations
+                        loadUsers();
+                    }
+                }
+                
+                // Check for Edit User modal (z-index: 2000)
+                const editModal = document.querySelector('div[style*="position: fixed"][style*="z-index: 2000"]');
+                if (editModal) {
+                    const editUserForm = editModal.querySelector('#editUserForm');
+                    if (editUserForm) {
+                        // Get username from data attribute
+                        const username = editModal.getAttribute('data-edit-username') || '';
+                        const titleH3 = editModal.querySelector('#editUserTitle');
+                        
+                        // Update title
+                        if (titleH3 && username) {
+                            titleH3.textContent = formatMessage('editUser', username);
+                        }
+                        
+                        // Update form labels
+                        const labels = editModal.querySelectorAll('#editUserForm label');
+                        labels.forEach((label, index) => {
+                            if (index === 0) {
+                                label.textContent = t.newPassword + ':';
+                            } else if (index === 1) {
+                                label.textContent = t.role + ':';
+                            } else if (index === 2) {
+                                label.textContent = t.active;
+                            }
+                        });
+                        
+                        // Update input placeholder
+                        const passwordInput = editModal.querySelector('#editPassword');
+                        if (passwordInput) passwordInput.placeholder = t.newPassword;
+                        
+                        // Update role select options
+                        const roleSelect = editModal.querySelector('#editRole');
+                        if (roleSelect) {
+                            const currentValue = roleSelect.value;
+                            roleSelect.innerHTML = `
+                                <option value="readonly">${t.readOnly}</option>
+                                <option value="full">${t.fullAccess}</option>
+                                <option value="admin">${t.admin}</option>
+                            `;
+                            roleSelect.value = currentValue; // Restore selected value
+                        }
+                        
+                        // Update buttons
+                        const saveBtn = editModal.querySelector('#editUserForm button[type="submit"]');
+                        if (saveBtn) saveBtn.textContent = t.save;
+                        
+                        const cancelBtn = editModal.querySelector('#cancelEditUserModal');
+                        if (cancelBtn) cancelBtn.textContent = t.cancel;
+                    }
+                }
+            }
+            
+            // Logout function
+            function logout() {
+                // Clear all localStorage data
+                localStorage.removeItem('access_token');
+                localStorage.removeItem('user_role');
+                localStorage.removeItem('username');
+                localStorage.removeItem('lastActivityTime');
+                
+                // Redirect to login page
+                window.location.href = '/login';
+            }
+            
+            // Inactivity timeout (1 hour = 3600000 milliseconds)
+            let inactivityTimeout = null;
+            const INACTIVITY_TIMEOUT = 3600000; // 1 hour in milliseconds
+            
+            function resetInactivityTimer() {
+                // Clear existing timeout
+                if (inactivityTimeout) {
+                    clearTimeout(inactivityTimeout);
+                }
+                
+                // Set new timeout
+                inactivityTimeout = setTimeout(() => {
+                    // Check if user is still logged in
+                    const token = localStorage.getItem('access_token');
+                    if (token) {
+                        // Clear token and redirect to login
+                        logout();
+                    }
+                }, INACTIVITY_TIMEOUT);
+                
+                // Store last activity time
+                localStorage.setItem('lastActivityTime', Date.now().toString());
+            }
+            
+            // Track user activity
+            function trackActivity() {
+                resetInactivityTimer();
+            }
+            
+            // Set up activity tracking
+            ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'].forEach(event => {
+                document.addEventListener(event, trackActivity, true);
+            });
+            
+            // Check if user was inactive when page loads
+            function checkInactivityOnLoad() {
+                const lastActivityTime = localStorage.getItem('lastActivityTime');
+                if (lastActivityTime) {
+                    const timeSinceLastActivity = Date.now() - parseInt(lastActivityTime);
+                    if (timeSinceLastActivity >= INACTIVITY_TIMEOUT) {
+                        // User was inactive for more than 1 hour
+                        logout();
+                        return;
+                    }
+                }
+                // Reset timer on page load
+                resetInactivityTimer();
             }
             
             // Role-based UI visibility
             function setupRoleBasedUI() {
                 const userRole = localStorage.getItem('user_role') || 'readonly';
                 const username = localStorage.getItem('username') || '';
+                const t = translations[currentLanguage] || translations.en;
                 
                 // Show username and role in header
                 const header = document.querySelector('.header');
                 if (header && username) {
+                    // Remove existing user info if present
+                    const existingUserInfo = header.querySelector('.user-info');
+                    if (existingUserInfo) {
+                        existingUserInfo.remove();
+                    }
+                    
                     const userInfo = document.createElement('div');
-                    userInfo.style.cssText = 'margin-top: 10px; font-size: 14px; color: #666;';
-                    userInfo.textContent = `Logged in as: ${username} (${userRole})`;
+                    userInfo.className = 'user-info';
+                    userInfo.style.cssText = 'margin-top: 10px; font-size: 14px; color: #666; display: flex; align-items: center; gap: 10px;';
+                    userInfo.innerHTML = `
+                        <span>${formatMessage('loggedInAs', username, userRole)}</span>
+                        <button id="logoutBtn" style="padding: 5px 15px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">${t.logout}</button>
+                    `;
                     header.appendChild(userInfo);
+                    
+                    // Add logout button event listener
+                    const logoutBtn = document.getElementById('logoutBtn');
+                    if (logoutBtn) {
+                        logoutBtn.addEventListener('click', function() {
+                            logout();
+                        });
+                    }
                 }
                 
                 // Hide/show UI elements based on role
@@ -3227,7 +3683,8 @@ async def sync_page():
                     if (controls) {
                         const userMgmtBtn = document.createElement('button');
                         userMgmtBtn.id = 'userMgmtBtn';
-                        userMgmtBtn.textContent = 'User Management';
+                        const t = translations[currentLanguage] || translations.en;
+                        userMgmtBtn.textContent = t.userManagement || 'User Management';
                         userMgmtBtn.style.cssText = 'padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px;';
                         userMgmtBtn.onclick = showUserManagement;
                         controls.appendChild(userMgmtBtn);
@@ -3239,34 +3696,55 @@ async def sync_page():
             function showUserManagement() {
                 const token = localStorage.getItem('access_token');
                 if (!token) {
-                    alert('Not authenticated');
+                    alert(formatMessage('notAuthenticated'));
                     window.location.href = '/login';
                     return;
                 }
+                
+                const t = translations[currentLanguage] || translations.en;
                 
                 // Create modal
                 const modal = document.createElement('div');
                 modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; justify-content: center; align-items: center;';
                 modal.innerHTML = `
-                    <div style="background: white; padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto;">
-                        <h2>User Management</h2>
+                    <div style="background: white; padding: 20px; border-radius: 8px; max-width: 800px; width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h2 style="margin: 0;">${t.userManagement}</h2>
+                            <button id="closeUserMgmtModal" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">${t.close}</button>
+                        </div>
                         <div id="userList"></div>
-                        <hr style="margin: 20px 0;">
-                        <h3>Add New User</h3>
-                        <form id="addUserForm" style="display: flex; flex-direction: column; gap: 10px;">
-                            <input type="text" id="newUsername" placeholder="Username" required>
-                            <input type="password" id="newPassword" placeholder="Password" required>
-                            <select id="newRole" required>
-                                <option value="readonly">Read Only</option>
-                                <option value="full">Full Access</option>
-                                <option value="admin">Admin</option>
-                            </select>
-                            <button type="submit">Add User</button>
+                        <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+                        <h3 style="margin-top: 20px;">${t.addNewUser}</h3>
+                        <form id="addUserForm" style="display: flex; flex-direction: column; gap: 12px; margin-top: 15px;">
+                            <div>
+                                <label style="display: block; margin-bottom: 5px; font-weight: 500;">${t.username}:</label>
+                                <input type="text" id="newUsername" placeholder="${t.username}" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; margin-bottom: 5px; font-weight: 500;">${t.password}:</label>
+                                <input type="password" id="newPassword" placeholder="${t.password}" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            </div>
+                            <div>
+                                <label style="display: block; margin-bottom: 5px; font-weight: 500;">${t.role}:</label>
+                                <select id="newRole" required style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                    <option value="readonly">${t.readOnly}</option>
+                                    <option value="full">${t.fullAccess}</option>
+                                    <option value="admin">${t.admin}</option>
+                                </select>
+                            </div>
+                            <button type="submit" style="padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; margin-top: 5px;">${t.addUser}</button>
                         </form>
-                        <button onclick="this.closest('div[style*=\\"position: fixed\\"]').remove()" style="margin-top: 10px;">Close</button>
                     </div>
                 `;
                 document.body.appendChild(modal);
+                
+                // Add close button event listener
+                const closeBtn = document.getElementById('closeUserMgmtModal');
+                if (closeBtn) {
+                    closeBtn.addEventListener('click', function() {
+                        modal.remove();
+                    });
+                }
                 
                 // Load users
                 loadUsers();
@@ -3274,30 +3752,59 @@ async def sync_page():
                 // Handle form submission
                 document.getElementById('addUserForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const username = document.getElementById('newUsername').value;
+                    const username = document.getElementById('newUsername').value.trim();
                     const password = document.getElementById('newPassword').value;
                     const role = document.getElementById('newRole').value;
                     
+                    // Validate inputs
+                    if (!username || !password || !role) {
+                        alert(formatMessage('error', 'Please fill in all fields'));
+                        return;
+                    }
+                    
                     try {
+                        const requestBody = { username, password, role };
+                        console.log('Creating user:', { username, role, passwordLength: password.length });
+                        
                         const response = await fetch('/api/users', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Authorization': 'Bearer ' + token
                             },
-                            body: JSON.stringify({ username, password, role })
+                            body: JSON.stringify(requestBody)
                         });
                         
                         if (response.ok) {
                             loadUsers();
                             document.getElementById('addUserForm').reset();
-                            alert('User created successfully');
+                            alert(formatMessage('userCreatedSuccessfully'));
                         } else {
-                            const data = await response.json();
-                            alert('Error: ' + (data.detail || 'Failed to create user'));
+                            let errorMsg = 'Failed to create user';
+                            try {
+                                const data = await response.json();
+                                if (data.detail) {
+                                    if (Array.isArray(data.detail)) {
+                                        // FastAPI validation errors
+                                        errorMsg = data.detail.map(err => `${err.loc ? err.loc.join('.') : ''}: ${err.msg || err}`).join('\\n');
+                                    } else {
+                                        errorMsg = data.detail;
+                                    }
+                                }
+                            } catch (parseError) {
+                                // If response is not JSON, try to get text
+                                try {
+                                    const text = await response.text();
+                                    errorMsg = text || `HTTP ${response.status}: ${response.statusText}`;
+                                } catch (textError) {
+                                    errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+                                }
+                            }
+                            console.error('User creation error:', errorMsg);
+                            alert(formatMessage('error', errorMsg));
                         }
                     } catch (error) {
-                        alert('Error: ' + error.message);
+                        alert(formatMessage('error', error.message));
                     }
                 });
             }
@@ -3305,6 +3812,8 @@ async def sync_page():
             async function loadUsers() {
                 const token = localStorage.getItem('access_token');
                 if (!token) return;
+                
+                const t = translations[currentLanguage] || translations.en;
                 
                 try {
                     const response = await fetch('/api/users', {
@@ -3317,27 +3826,130 @@ async def sync_page():
                         const users = await response.json();
                         const userList = document.getElementById('userList');
                         const currentUsername = localStorage.getItem('username') || '';
-                        userList.innerHTML = '<h3>Users</h3><table style="width: 100%; border-collapse: collapse;"><tr><th>Username</th><th>Role</th><th>Active</th><th>Actions</th></tr>' +
-                            users.map(user => `
-                                <tr>
-                                    <td>${user.username}</td>
-                                    <td>${user.role}</td>
-                                    <td>${user.is_active ? 'Yes' : 'No'}</td>
-                                    <td>
-                                        ${user.username !== currentUsername ? 
-                                            `<button onclick="deleteUser(${user.id})" style="padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>` : 
-                                            '<span style="color: #999;">Current user</span>'}
-                                    </td>
-                                </tr>
-                            `).join('') + '</table>';
+                        userList.innerHTML = `
+                            <h3>${t.users}</h3>
+                            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                                <thead>
+                                    <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #ddd;">${t.username}</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #ddd;">${t.role}</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #ddd;">${t.active}</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #ddd;">${t.actions}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${users.map(user => `
+                                        <tr style="border-bottom: 1px solid #eee;">
+                                            <td style="padding: 10px;">${user.username}</td>
+                                            <td style="padding: 10px;">${user.role}</td>
+                                            <td style="padding: 10px;">${user.is_active ? '<span style="color: green;">' + t.yes + '</span>' : '<span style="color: red;">' + t.no + '</span>'}</td>
+                                            <td style="padding: 10px;">
+                                                ${user.username !== currentUsername ? 
+                                                    `<button onclick="editUser(${user.id}, '${user.username}', '${user.role}', ${user.is_active})" style="padding: 5px 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px;">${t.edit}</button>
+                                                     <button onclick="deleteUser(${user.id})" style="padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">${t.delete}</button>` : 
+                                                    '<span style="color: #999;">' + t.currentUser + '</span>'}
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        `;
                     }
                 } catch (error) {
                     console.error('Error loading users:', error);
                 }
             }
             
+            async function editUser(userId, username, currentRole, isActive) {
+                const token = localStorage.getItem('access_token');
+                if (!token) return;
+                
+                const t = translations[currentLanguage] || translations.en;
+                
+                // Create edit modal
+                const editModal = document.createElement('div');
+                editModal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 2000; display: flex; justify-content: center; align-items: center;';
+                editModal.setAttribute('data-edit-username', username); // Store username for language updates
+                editModal.innerHTML = `
+                    <div style="background: white; padding: 20px; border-radius: 8px; max-width: 400px; width: 90%;">
+                        <h3 id="editUserTitle">${formatMessage('editUser', username)}</h3>
+                        <form id="editUserForm" style="display: flex; flex-direction: column; gap: 10px; margin-top: 15px;">
+                            <label>${t.newPassword}:</label>
+                            <input type="password" id="editPassword" placeholder="${t.newPassword}">
+                            
+                            <label>${t.role}:</label>
+                            <select id="editRole" required>
+                                <option value="readonly" ${currentRole === 'readonly' ? 'selected' : ''}>${t.readOnly}</option>
+                                <option value="full" ${currentRole === 'full' ? 'selected' : ''}>${t.fullAccess}</option>
+                                <option value="admin" ${currentRole === 'admin' ? 'selected' : ''}>${t.admin}</option>
+                            </select>
+                            
+                            <label>
+                                <input type="checkbox" id="editIsActive" ${isActive ? 'checked' : ''}>
+                                ${t.active}
+                            </label>
+                            
+                            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                                <button type="submit" style="flex: 1; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">${t.save}</button>
+                                <button type="button" id="cancelEditUserModal" style="flex: 1; padding: 10px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">${t.cancel}</button>
+                            </div>
+                        </form>
+                    </div>
+                `;
+                document.body.appendChild(editModal);
+                
+                // Add cancel button event listener
+                const cancelBtn = document.getElementById('cancelEditUserModal');
+                if (cancelBtn) {
+                    cancelBtn.addEventListener('click', function() {
+                        editModal.remove();
+                    });
+                }
+                
+                // Handle form submission
+                document.getElementById('editUserForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const password = document.getElementById('editPassword').value;
+                    const role = document.getElementById('editRole').value;
+                    const isActive = document.getElementById('editIsActive').checked;
+                    
+                    const updateData = {
+                        role: role,
+                        is_active: isActive
+                    };
+                    
+                    // Only include password if provided
+                    if (password && password.trim() !== '') {
+                        updateData.password = password;
+                    }
+                    
+                    try {
+                        const response = await fetch(`/api/users/${userId}`, {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': 'Bearer ' + token
+                            },
+                            body: JSON.stringify(updateData)
+                        });
+                        
+                        if (response.ok) {
+                            editModal.remove();
+                            loadUsers();
+                            alert(formatMessage('userUpdatedSuccessfully'));
+                        } else {
+                            const data = await response.json();
+                            alert(formatMessage('error', data.detail || 'Failed to update user'));
+                        }
+                    } catch (error) {
+                        alert(formatMessage('error', error.message));
+                    }
+                });
+            }
+            
             async function deleteUser(userId) {
-                if (!confirm('Are you sure you want to delete this user?')) return;
+                const t = translations[currentLanguage] || translations.en;
+                if (!confirm(formatMessage('confirmDeleteUser'))) return;
                 
                 const token = localStorage.getItem('access_token');
                 if (!token) return;
@@ -3352,13 +3964,13 @@ async def sync_page():
                     
                     if (response.ok) {
                         loadUsers();
-                        alert('User deleted successfully');
+                        alert(formatMessage('userDeletedSuccessfully'));
                     } else {
                         const data = await response.json();
-                        alert('Error: ' + (data.detail || 'Failed to delete user'));
+                        alert(formatMessage('error', data.detail || 'Failed to delete user'));
                     }
                 } catch (error) {
-                    alert('Error: ' + error.message);
+                    alert(formatMessage('error', error.message));
                 }
             }
             
@@ -3394,11 +4006,15 @@ async def sync_page():
                 document.addEventListener('DOMContentLoaded', function() {
                     initializeLanguage();
                     setupRoleBasedUI();
+                    setupButtonHandlers();
+                    checkInactivityOnLoad();
                 });
             } else {
                 // DOM is already ready
                 initializeLanguage();
                 setupRoleBasedUI();
+                setupButtonHandlers();
+                checkInactivityOnLoad();
             }
             
             let currentAnalysis = null;
@@ -3407,6 +4023,9 @@ async def sync_page():
             
             if (!token) {
                 window.location.href = '/login';
+            } else {
+                // Start inactivity timer if user is logged in
+                checkInactivityOnLoad();
             }
             
             // Function to handle folder selection
@@ -5883,6 +6502,15 @@ async def sync_page():
                         msg.remove();
                     }, 5000);
                 }
+            }
+            
+            // Ensure button handlers are set up after all functions are defined
+            // This is a fallback in case the earlier call didn't work
+            if (typeof setupButtonHandlers === 'function') {
+                // Use setTimeout to ensure DOM is ready
+                setTimeout(() => {
+                    setupButtonHandlers();
+                }, 100);
             }
         </script>
     </body>

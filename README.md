@@ -41,6 +41,23 @@ DocuSync is a powerful yet simple document management system that helps you orga
 - **Path Mapping**: Specify custom target folders when exact paths don't exist
 - **Tree Structure Preservation**: Maintains subfolder hierarchy when syncing (e.g., `sub1\sub2\file.pdf` in folder1 matches `sub1\sub2\file.pdf` in folder2)
 
+### 👥 User Management & Security
+- **Role-Based Access Control**: Three user roles (readonly, full, admin)
+- **User Management Interface**: Admin can create, edit, and delete users
+- **Password Management**: Change user passwords and manage accounts
+- **Session Management**: 
+  - Automatic logout after 1 hour of inactivity
+  - Manual logout button in header
+  - Secure token-based authentication
+- **Activity Tracking**: Monitors user activity to enforce inactivity timeout
+
+### 🌍 Multi-Language Support
+- **6 Languages Supported**: English, German, French, Spanish, Italian, Russian
+- **Dynamic Language Switching**: Change language on-the-fly without page reload
+- **Fully Translated Interface**: All UI elements, buttons, messages, and forms
+- **Language Persistence**: Selected language is saved in browser storage
+- **Auto-Detection**: Automatically detects browser language on first visit
+
 ### 🗄️ Database Storage
 - **SQLite Database**: Fast, local, no server required
 - **Indexed Queries**: Optimized indexes for quick searches
@@ -242,8 +259,16 @@ Then access:
 - **API Documentation**: http://localhost:8000/docs
 - **Login Page**: http://localhost:8000/login
 
+**Web Interface Features:**
+- Multi-language support (English, German, French, Spanish, Italian, Russian)
+- User management (admin only)
+- Logout functionality
+- Automatic inactivity timeout (1 hour)
+- Role-based UI visibility
+
 ### API Endpoints
 
+**Document Operations:**
 - **Search**: `GET /api/search?q=query`
 - **List Documents**: `GET /api/documents`
 - **Statistics**: `GET /api/stats`
@@ -251,11 +276,35 @@ Then access:
 - **Sync Analysis**: `POST /api/sync/analyze` (analyze sync requirements)
 - **Sync Execute**: `POST /api/sync/execute` (perform sync operation)
 
-### Authentication
+**User Management (Admin only):**
+- **List Users**: `GET /api/users`
+- **Create User**: `POST /api/users`
+- **Update User**: `PUT /api/users/{user_id}`
+- **Delete User**: `DELETE /api/users/{user_id}`
 
-Default credentials:
+**Authentication:**
+- **Login**: `POST /api/auth/login`
+
+### Authentication & User Management
+
+**Default Credentials:**
 - Username: `admin`
 - Password: `admin`
+
+**User Roles:**
+- **readonly**: Can view and search documents, but cannot modify or sync
+- **full**: Can view, search, and perform sync operations
+- **admin**: Full access including user management
+
+**Features:**
+- JWT token-based authentication
+- Role-based access control (readonly, full, admin)
+- User management interface (admin only)
+  - Create, edit, and delete users
+  - Assign roles and manage active status
+  - Change passwords
+- Automatic logout after 1 hour of inactivity
+- Logout button in the header
 
 All API endpoints (except `/login`) require authentication via JWT token.
 
