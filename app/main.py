@@ -21,7 +21,7 @@ from app.search_fts5 import (
 from app.file_scanner import find_duplicates, find_all_duplicates
 from app.auth import (
     authenticate_user, create_access_token, get_current_user,
-    init_default_user
+    init_default_user, require_admin, require_full_or_admin
 )
 from app.reports import (
     get_activities, get_space_saved_report, get_operations_report,
@@ -80,6 +80,8 @@ class Token(BaseModel):
 
     access_token: str
     token_type: str
+    role: str
+    username: str
 
 
 class LoginRequest(BaseModel):
@@ -268,6 +270,8 @@ async def login_page():
                         messageDiv.innerHTML = '<div class="success">Login successful! Token: ' + 
                             data.access_token.substring(0, 20) + '...</div>';
                         localStorage.setItem('access_token', data.access_token);
+                        localStorage.setItem('user_role', data.role);
+                        localStorage.setItem('username', data.username);
                         messageDiv.innerHTML += '<div class="success">Token saved. Redirecting...</div>';
                         setTimeout(() => {
                             window.location.href = '/sync';
@@ -299,10 +303,20 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
     access_token = create_access_token(
         data={"sub": user.username}
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": user.role,
+        "username": user.username
+    }
 
 
 @app.get("/api/search", response_model=List[DocumentResponse])
@@ -1232,7 +1246,7 @@ async def analyze_sync(
 @app.post("/api/sync/copy-file")
 async def copy_file(
     request: CopyFileRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_full_or_admin)
 ):
     """Copy a single file with confirmation."""
     from app.database import SessionLocal, Document
@@ -1408,7 +1422,7 @@ async def check_file(
 @app.post("/api/sync/delete-file")
 async def delete_file(
     request: dict,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_full_or_admin)
 ):
     """Delete a file (used for duplicate replacement)."""
     import os
@@ -1443,7 +1457,7 @@ async def delete_file(
 @app.post("/api/sync/eliminate-duplicates-folder")
 async def eliminate_duplicates_folder(
     request: dict,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_full_or_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -1749,7 +1763,7 @@ async def eliminate_duplicates_folder(
 @app.post("/api/sync/eliminate-duplicates")
 async def eliminate_duplicates(
     request: dict,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_full_or_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -2025,9 +2039,9 @@ async def eliminate_duplicates(
 @app.post("/api/sync/execute")
 async def execute_sync(
     request: SyncRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_full_or_admin)
 ):
-    """Execute folder synchronization."""
+    """Execute folder synchronization. Requires full or admin role."""
     result = sync_folders(
         folder1=request.folder1,
         folder2=request.folder2,
@@ -2037,6 +2051,97 @@ async def execute_sync(
         dry_run=request.dry_run
     )
     return result
+
+
+# User Management Endpoints (Admin only)
+@app.get("/api/users", response_model=List[UserResponse])
+async def list_users(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """List all users. Admin only."""
+    users = db.query(User).all()
+    return [
+        UserResponse(
+            id=user.id,
+            username=user.username,
+            role=user.role,
+            is_active=user.is_active,
+            created_at=user.created_at.isoformat() if user.created_at else ""
+        )
+        for user in users
+    ]
+
+
+@app.post("/api/users", response_model=UserResponse)
+async def create_user(
+    user_data: UserCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Create a new user. Admin only."""
+    from app.auth import get_password_hash, get_user_by_username
+    
+    # Validate role
+    if user_data.role not in ['readonly', 'full', 'admin']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid role. Must be 'readonly', 'full', or 'admin'"
+        )
+    
+    # Check if user already exists
+    existing_user = get_user_by_username(db, user_data.username)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        username=user_data.username,
+        hashed_password=hashed_password,
+        role=user_data.role,
+        is_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return UserResponse(
+        id=new_user.id,
+        username=new_user.username,
+        role=new_user.role,
+        is_active=new_user.is_active,
+        created_at=new_user.created_at.isoformat() if new_user.created_at else ""
+    )
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """Delete a user. Admin only."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Prevent deleting yourself
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete your own account"
+        )
+    
+    db.delete(user)
+    db.commit()
+    return {"message": "User deleted successfully"}
 
 
 @app.get("/sync", response_class=HTMLResponse)
@@ -3063,12 +3168,187 @@ async def sync_page():
                 applyTranslations(currentLanguage);
             }
             
+            // Role-based UI visibility
+            function setupRoleBasedUI() {
+                const userRole = localStorage.getItem('user_role') || 'readonly';
+                const username = localStorage.getItem('username') || '';
+                
+                // Show username and role in header
+                const header = document.querySelector('.header');
+                if (header && username) {
+                    const userInfo = document.createElement('div');
+                    userInfo.style.cssText = 'margin-top: 10px; font-size: 14px; color: #666;';
+                    userInfo.textContent = `Logged in as: ${username} (${userRole})`;
+                    header.appendChild(userInfo);
+                }
+                
+                // Hide/show UI elements based on role
+                const executeBtn = document.getElementById('executeBtn');
+                if (executeBtn) {
+                    if (userRole === 'readonly') {
+                        executeBtn.style.display = 'none';
+                    } else {
+                        executeBtn.style.display = 'inline-block';
+                    }
+                }
+                
+                // Hide eliminate duplicates buttons for readonly users
+                const eliminateContainer = document.getElementById('eliminateButtonsContainer');
+                if (eliminateContainer && userRole === 'readonly') {
+                    eliminateContainer.style.display = 'none';
+                }
+                
+                // Add user management UI for admin
+                if (userRole === 'admin') {
+                    const controls = document.querySelector('.controls');
+                    if (controls) {
+                        const userMgmtBtn = document.createElement('button');
+                        userMgmtBtn.id = 'userMgmtBtn';
+                        userMgmtBtn.textContent = 'User Management';
+                        userMgmtBtn.style.cssText = 'padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px;';
+                        userMgmtBtn.onclick = showUserManagement;
+                        controls.appendChild(userMgmtBtn);
+                    }
+                }
+            }
+            
+            // User management UI (admin only)
+            function showUserManagement() {
+                const token = localStorage.getItem('access_token');
+                if (!token) {
+                    alert('Not authenticated');
+                    window.location.href = '/login';
+                    return;
+                }
+                
+                // Create modal
+                const modal = document.createElement('div');
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; justify-content: center; align-items: center;';
+                modal.innerHTML = `
+                    <div style="background: white; padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto;">
+                        <h2>User Management</h2>
+                        <div id="userList"></div>
+                        <hr style="margin: 20px 0;">
+                        <h3>Add New User</h3>
+                        <form id="addUserForm" style="display: flex; flex-direction: column; gap: 10px;">
+                            <input type="text" id="newUsername" placeholder="Username" required>
+                            <input type="password" id="newPassword" placeholder="Password" required>
+                            <select id="newRole" required>
+                                <option value="readonly">Read Only</option>
+                                <option value="full">Full Access</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                            <button type="submit">Add User</button>
+                        </form>
+                        <button onclick="this.closest('div[style*=\\"position: fixed\\"]').remove()" style="margin-top: 10px;">Close</button>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+                
+                // Load users
+                loadUsers();
+                
+                // Handle form submission
+                document.getElementById('addUserForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const username = document.getElementById('newUsername').value;
+                    const password = document.getElementById('newPassword').value;
+                    const role = document.getElementById('newRole').value;
+                    
+                    try {
+                        const response = await fetch('/api/users', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': 'Bearer ' + token
+                            },
+                            body: JSON.stringify({ username, password, role })
+                        });
+                        
+                        if (response.ok) {
+                            loadUsers();
+                            document.getElementById('addUserForm').reset();
+                            alert('User created successfully');
+                        } else {
+                            const data = await response.json();
+                            alert('Error: ' + (data.detail || 'Failed to create user'));
+                        }
+                    } catch (error) {
+                        alert('Error: ' + error.message);
+                    }
+                });
+            }
+            
+            async function loadUsers() {
+                const token = localStorage.getItem('access_token');
+                if (!token) return;
+                
+                try {
+                    const response = await fetch('/api/users', {
+                        headers: {
+                            'Authorization': 'Bearer ' + token
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const users = await response.json();
+                        const userList = document.getElementById('userList');
+                        const currentUsername = localStorage.getItem('username') || '';
+                        userList.innerHTML = '<h3>Users</h3><table style="width: 100%; border-collapse: collapse;"><tr><th>Username</th><th>Role</th><th>Active</th><th>Actions</th></tr>' +
+                            users.map(user => `
+                                <tr>
+                                    <td>${user.username}</td>
+                                    <td>${user.role}</td>
+                                    <td>${user.is_active ? 'Yes' : 'No'}</td>
+                                    <td>
+                                        ${user.username !== currentUsername ? 
+                                            `<button onclick="deleteUser(${user.id})" style="padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>` : 
+                                            '<span style="color: #999;">Current user</span>'}
+                                    </td>
+                                </tr>
+                            `).join('') + '</table>';
+                    }
+                } catch (error) {
+                    console.error('Error loading users:', error);
+                }
+            }
+            
+            async function deleteUser(userId) {
+                if (!confirm('Are you sure you want to delete this user?')) return;
+                
+                const token = localStorage.getItem('access_token');
+                if (!token) return;
+                
+                try {
+                    const response = await fetch(`/api/users/${userId}`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Authorization': 'Bearer ' + token
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        loadUsers();
+                        alert('User deleted successfully');
+                    } else {
+                        const data = await response.json();
+                        alert('Error: ' + (data.detail || 'Failed to delete user'));
+                    }
+                } catch (error) {
+                    alert('Error: ' + error.message);
+                }
+            }
+            
             // Apply translations on page load
             if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initializeLanguage);
+                document.addEventListener('DOMContentLoaded', function() {
+                    initializeLanguage();
+                    setupRoleBasedUI();
+                });
             } else {
                 // DOM is already ready
                 initializeLanguage();
+                setupRoleBasedUI();
             }
             
             let currentAnalysis = null;

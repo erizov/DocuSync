@@ -92,9 +92,46 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
         user = get_user_by_username(db, username)
         if user is None:
             raise credentials_exception
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is inactive"
+            )
         return user
     finally:
         db.close()
+
+
+def require_role(allowed_roles: list[str]):
+    """Dependency to require specific roles."""
+    def role_checker(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required role: {', '.join(allowed_roles)}"
+            )
+        return current_user
+    return role_checker
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require admin role."""
+    if current_user.role != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+
+def require_full_or_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require full or admin role (for sync operations)."""
+    if current_user.role not in ['full', 'admin']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Full access or admin role required for this operation"
+        )
+    return current_user
 
 
 def init_default_user() -> None:
@@ -124,11 +161,18 @@ def init_default_user() -> None:
             user = User(
                 username=settings.default_username,
                 hashed_password=hashed_password,
+                role='admin',  # Default user is admin
                 is_active=True
             )
             db.add(user)
             db.commit()
-            print(f"Created default user: {settings.default_username}")
+            print(f"Created default admin user: {settings.default_username}")
+        else:
+            # Update existing user to admin role if not set
+            if not existing_user.role:
+                existing_user.role = 'admin'
+                db.commit()
+                print(f"Updated existing user {settings.default_username} to admin role")
     except Exception as e:
         print(f"Warning: Could not initialize default user: {e}")
         db.rollback()
