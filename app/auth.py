@@ -168,8 +168,8 @@ def init_default_user() -> None:
             db.commit()
             print(f"Created default admin user: {settings.default_username}")
         else:
-            # Update existing user to admin role if not set
-            if not existing_user.role:
+            # Update existing user to admin role if not admin
+            if existing_user.role != 'admin':
                 existing_user.role = 'admin'
                 db.commit()
                 print(f"Updated existing user {settings.default_username} to admin role")

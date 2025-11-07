@@ -129,6 +129,11 @@ def migrate_add_role_column(db_engine=None) -> None:
         conn.execute(text(
             "UPDATE users SET role = 'admin' WHERE role IS NULL OR role = ''"
         ))
+        # Also update the default admin user to admin role if it exists
+        from app.config import settings
+        conn.execute(text(
+            "UPDATE users SET role = 'admin' WHERE username = :username AND role != 'admin'"
+        ), {"username": settings.default_username})
         conn.commit()
     except Exception as e:
         print(f"Warning: Could not migrate users table: {e}")
