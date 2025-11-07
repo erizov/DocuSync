@@ -531,9 +531,18 @@ async def get_activities_report(
     """Get activity report. Admin only."""
     from app.reports import get_activities as get_activities_func
     try:
-        activities = get_activities_func(activity_type=activity_type, limit=limit)
+        # Run with 60-second timeout
+        loop = asyncio.get_event_loop()
+        activities = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_activities_func(activity_type=activity_type, limit=limit * 2)),  # Get more to filter
+            timeout=60.0
+        )
         if not activities:
             return []
+        # Filter out activities where space_saved_bytes is 0
+        activities = [a for a in activities if (a.space_saved_bytes or 0) > 0]
+        # Limit after filtering
+        activities = activities[:limit]
         # Convert Activity objects to ActivityResponse
         return [
             ActivityResponse(
@@ -547,6 +556,11 @@ async def get_activities_report(
             )
             for activity in activities
         ]
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Request timed out after 60 seconds"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -577,8 +591,18 @@ async def get_space_saved_report_endpoint(
                 end = datetime.strptime(end_date, "%Y-%m-%d")
             else:
                 end = datetime.fromisoformat(end_date)
-        result = get_space_saved_report_func(start_date=start, end_date=end)
+        # Run with 60-second timeout
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_space_saved_report_func(start_date=start, end_date=end)),
+            timeout=60.0
+        )
         return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Request timed out after 60 seconds"
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -614,8 +638,18 @@ async def get_operations_report_endpoint(
                 end = datetime.strptime(end_date, "%Y-%m-%d")
             else:
                 end = datetime.fromisoformat(end_date)
-        result = get_operations_report_func(start_date=start, end_date=end)
+        # Run with 60-second timeout
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_operations_report_func(start_date=start, end_date=end)),
+            timeout=60.0
+        )
         return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Request timed out after 60 seconds"
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -628,13 +662,47 @@ async def get_operations_report_endpoint(
         )
 
 
+@app.get("/api/drives")
+async def get_available_drives(
+    current_user: User = Depends(get_current_user)
+):
+    """Get list of available drives."""
+    import string
+    drives = []
+    for drive_letter in string.ascii_uppercase:
+        drive_path = f"{drive_letter}:\\"
+        if os.path.exists(drive_path):
+            drives.append(drive_letter)
+    return {"drives": drives}
+
+
 @app.get("/api/reports/corrupted-pdfs")
 async def get_corrupted_pdfs_report(
     drive: Optional[str] = Query(None, description="Filter by drive"),
+    limit: int = Query(1000, ge=1, le=5000, description="Maximum PDFs to check"),
     current_user: User = Depends(require_admin)
 ):
     """Get corrupted PDF files report. Admin only."""
-    return get_corrupted_pdf_report(drive=drive)
+    try:
+        # Run with 60-second timeout
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_corrupted_pdf_report(drive=drive, limit=limit)),
+            timeout=60.0
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Request timed out after 60 seconds. The report may be processing too many PDFs. Try reducing the limit parameter."
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error loading corrupted PDFs report: {str(e)}"
+        )
 
 
 @app.delete("/api/corrupted-pdfs/{file_id}")
@@ -1786,7 +1854,7 @@ async def eliminate_duplicates_folder(
                     # Log activity
                     try:
                         log_activity(
-                            activity_type="delete",
+                            activity_type="delete_duplicates",
                             description=f"Deleted duplicate file: {file_path}",
                             document_path=file_path,
                             space_saved_bytes=file_size,
@@ -2087,7 +2155,7 @@ async def eliminate_duplicates(
                     # Log activity
                     try:
                         log_activity(
-                            activity_type="delete",
+                            activity_type="delete_duplicates",
                             description=f"Deleted duplicate file: {file_path}",
                             document_path=file_path,
                             space_saved_bytes=file_size,
@@ -2990,7 +3058,21 @@ async def sync_page():
                     filePath: 'File Path',
                     size: 'Size',
                     actions: 'Actions',
-                    remove: 'Remove'
+                    remove: 'Remove',
+                    backToSync: '← Back to Sync',
+                    loadActivities: 'Load Activities',
+                    loadReport: 'Load Report',
+                    allTypes: 'All Types',
+                    allDrives: 'All Drives',
+                    limit: 'Limit',
+                    totalCorrupted: 'Total Corrupted',
+                    totalSize: 'Total Size',
+                    noCorruptedPDFs: 'No corrupted PDFs found',
+                    failedToLoad: 'Failed to load',
+                    activitiesReport: 'Failed to load activities',
+                    spaceSavedReport: 'Failed to load space saved report',
+                    operationsReport: 'Failed to load operations report',
+                    corruptedPDFsReport: 'Failed to load corrupted PDFs report'
                 },
                 de: {
                     title: 'DocuSync - Ordner-Synchronisation',
@@ -3084,7 +3166,21 @@ async def sync_page():
                     filePath: 'Dateipfad',
                     size: 'Größe',
                     actions: 'Aktionen',
-                    remove: 'Entfernen'
+                    remove: 'Entfernen',
+                    backToSync: '← Zurück zur Synchronisation',
+                    loadActivities: 'Aktivitäten laden',
+                    loadReport: 'Bericht laden',
+                    allTypes: 'Alle Typen',
+                    allDrives: 'Alle Laufwerke',
+                    limit: 'Limit',
+                    totalCorrupted: 'Gesamt beschädigt',
+                    totalSize: 'Gesamtgröße',
+                    noCorruptedPDFs: 'Keine beschädigten PDFs gefunden',
+                    failedToLoad: 'Laden fehlgeschlagen',
+                    activitiesReport: 'Aktivitäten konnten nicht geladen werden',
+                    spaceSavedReport: 'Bericht über gespeicherten Speicherplatz konnte nicht geladen werden',
+                    operationsReport: 'Vorgangsbericht konnte nicht geladen werden',
+                    corruptedPDFsReport: 'Bericht über beschädigte PDFs konnte nicht geladen werden'
                 },
                 fr: {
                     title: 'DocuSync - Synchronisation de dossiers',
@@ -3178,7 +3274,21 @@ async def sync_page():
                     filePath: 'Chemin du fichier',
                     size: 'Taille',
                     actions: 'Actions',
-                    remove: 'Supprimer'
+                    remove: 'Supprimer',
+                    backToSync: '← Retour à la synchronisation',
+                    loadActivities: 'Charger les activités',
+                    loadReport: 'Charger le rapport',
+                    allTypes: 'Tous les types',
+                    allDrives: 'Tous les lecteurs',
+                    limit: 'Limite',
+                    totalCorrupted: 'Total corrompu',
+                    totalSize: 'Taille totale',
+                    noCorruptedPDFs: 'Aucun PDF corrompu trouvé',
+                    failedToLoad: 'Échec du chargement',
+                    activitiesReport: 'Impossible de charger les activités',
+                    spaceSavedReport: 'Impossible de charger le rapport d\\'espace libéré',
+                    operationsReport: 'Impossible de charger le rapport des opérations',
+                    corruptedPDFsReport: 'Impossible de charger le rapport des PDFs corrompus'
                 },
                 es: {
                     title: 'DocuSync - Sincronización de carpetas',
@@ -3272,7 +3382,21 @@ async def sync_page():
                     filePath: 'Ruta del archivo',
                     size: 'Tamaño',
                     actions: 'Acciones',
-                    remove: 'Eliminar'
+                    remove: 'Eliminar',
+                    backToSync: '← Volver a sincronización',
+                    loadActivities: 'Cargar actividades',
+                    loadReport: 'Cargar informe',
+                    allTypes: 'Todos los tipos',
+                    allDrives: 'Todas las unidades',
+                    limit: 'Límite',
+                    totalCorrupted: 'Total corrupto',
+                    totalSize: 'Tamaño total',
+                    noCorruptedPDFs: 'No se encontraron PDFs corruptos',
+                    failedToLoad: 'Error al cargar',
+                    activitiesReport: 'No se pudieron cargar las actividades',
+                    spaceSavedReport: 'No se pudo cargar el informe de espacio liberado',
+                    operationsReport: 'No se pudo cargar el informe de operaciones',
+                    corruptedPDFsReport: 'No se pudo cargar el informe de PDFs corruptos'
                 },
                 it: {
                     title: 'DocuSync - Sincronizzazione cartelle',
@@ -3366,7 +3490,21 @@ async def sync_page():
                     filePath: 'Percorso file',
                     size: 'Dimensione',
                     actions: 'Azioni',
-                    remove: 'Rimuovi'
+                    remove: 'Rimuovi',
+                    backToSync: '← Torna alla sincronizzazione',
+                    loadActivities: 'Carica attività',
+                    loadReport: 'Carica rapporto',
+                    allTypes: 'Tutti i tipi',
+                    allDrives: 'Tutte le unità',
+                    limit: 'Limite',
+                    totalCorrupted: 'Totale corrotto',
+                    totalSize: 'Dimensione totale',
+                    noCorruptedPDFs: 'Nessun PDF corrotto trovato',
+                    failedToLoad: 'Caricamento fallito',
+                    activitiesReport: 'Impossibile caricare le attività',
+                    spaceSavedReport: 'Impossibile caricare il rapporto dello spazio liberato',
+                    operationsReport: 'Impossibile caricare il rapporto delle operazioni',
+                    corruptedPDFsReport: 'Impossibile caricare il rapporto dei PDF corrotti'
                 },
                 ru: {
                     title: 'DocuSync - Синхронизация папок',
@@ -3460,7 +3598,21 @@ async def sync_page():
                     filePath: 'Путь к файлу',
                     size: 'Размер',
                     actions: 'Действия',
-                    remove: 'Удалить'
+                    remove: 'Удалить',
+                    backToSync: '← Назад к синхронизации',
+                    loadActivities: 'Загрузить активности',
+                    loadReport: 'Загрузить отчет',
+                    allTypes: 'Все типы',
+                    allDrives: 'Все диски',
+                    limit: 'Лимит',
+                    totalCorrupted: 'Всего повреждено',
+                    totalSize: 'Общий размер',
+                    noCorruptedPDFs: 'Поврежденных PDF не найдено',
+                    failedToLoad: 'Ошибка загрузки',
+                    activitiesReport: 'Не удалось загрузить активности',
+                    spaceSavedReport: 'Не удалось загрузить отчет об освобожденном месте',
+                    operationsReport: 'Не удалось загрузить отчет об операциях',
+                    corruptedPDFsReport: 'Не удалось загрузить отчет о поврежденных PDF'
                 }
             };
             
@@ -3969,7 +4121,7 @@ async def sync_page():
                                     <option value="readonly">${t.readOnly}</option>
                                     <option value="full">${t.fullAccess}</option>
                                     <option value="admin">${t.admin}</option>
-                                </select>
+                            </select>
                             </div>
                             <button type="submit" style="padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; margin-top: 5px;">${t.addUser}</button>
                         </form>
@@ -4021,7 +4173,7 @@ async def sync_page():
                         } else {
                             let errorMsg = 'Failed to create user';
                             try {
-                                const data = await response.json();
+                            const data = await response.json();
                                 if (data.detail) {
                                     if (Array.isArray(data.detail)) {
                                         // FastAPI validation errors
@@ -4083,12 +4235,12 @@ async def sync_page():
                                             <td style="padding: 10px;">${user.role}</td>
                                             <td style="padding: 10px;">${user.is_active ? '<span style="color: green;">' + t.yes + '</span>' : '<span style="color: red;">' + t.no + '</span>'}</td>
                                             <td style="padding: 10px;">
-                                                ${user.username !== currentUsername ? 
+                                        ${user.username !== currentUsername ? 
                                                     `<button onclick="editUser(${user.id}, '${user.username}', '${user.role}', ${user.is_active})" style="padding: 5px 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px;">${t.edit}</button>
                                                      <button onclick="deleteUser(${user.id})" style="padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">${t.delete}</button>` : 
                                                     '<span style="color: #999;">' + t.currentUser + '</span>'}
-                                            </td>
-                                        </tr>
+                                    </td>
+                                </tr>
                                     `).join('')}
                                 </tbody>
                             </table>
@@ -6796,30 +6948,30 @@ async def reports_page():
         </style>
     </head>
     <body>
-        <a href="/sync" class="back-link">← Back to Sync</a>
+        <a href="/sync" class="back-link" id="backToSyncLink">← Back to Sync</a>
         <div class="header">
-            <h1>Reports</h1>
+            <h1 id="reportsTitle">Reports</h1>
             <div class="user-info" style="margin-top: 10px; font-size: 14px; color: #666;"></div>
         </div>
         <div class="tabs">
-            <button class="tab active" data-tab="activities">Activities</button>
-            <button class="tab" data-tab="space-saved">Space Saved</button>
-            <button class="tab" data-tab="operations">Operations</button>
-            <button class="tab" data-tab="corrupted-pdfs">Corrupted PDFs</button>
+            <button class="tab active" data-tab="activities" id="tabActivities">Activities</button>
+            <button class="tab" data-tab="space-saved" id="tabSpaceSaved">Space Saved</button>
+            <button class="tab" data-tab="operations" id="tabOperations">Operations</button>
+            <button class="tab" data-tab="corrupted-pdfs" id="tabCorruptedPDFs">Corrupted PDFs</button>
         </div>
         <div id="activities" class="tab-content active">
             <div class="filters">
-                <select id="activityTypeFilter"><option value="">All Types</option></select>
+                <select id="activityTypeFilter"><option value="" id="allTypesOption">All Types</option></select>
                 <input type="number" id="activitiesLimit" value="100" min="1" max="1000" placeholder="Limit">
-                <button onclick="loadActivities()">Load Activities</button>
+                <button id="loadActivitiesBtn">Load Activities</button>
             </div>
-            <div id="activitiesContent"><div class="loading">Loading...</div></div>
+            <div id="activitiesContent"><div class="loading" id="loadingText">Loading...</div></div>
         </div>
         <div id="space-saved" class="tab-content">
             <div class="filters">
                 <input type="date" id="spaceStartDate">
                 <input type="date" id="spaceEndDate">
-                <button onclick="loadSpaceSaved()">Load Report</button>
+                <button id="loadSpaceSavedBtn">Load Report</button>
             </div>
             <div id="spaceSavedContent"><div class="loading">Loading...</div></div>
         </div>
@@ -6827,18 +6979,222 @@ async def reports_page():
             <div class="filters">
                 <input type="date" id="opsStartDate">
                 <input type="date" id="opsEndDate">
-                <button onclick="loadOperations()">Load Report</button>
+                <button id="loadOperationsBtn">Load Report</button>
             </div>
             <div id="operationsContent"><div class="loading">Loading...</div></div>
         </div>
         <div id="corrupted-pdfs" class="tab-content">
             <div class="filters">
-                <select id="corruptedDriveFilter"><option value="">All Drives</option></select>
-                <button onclick="loadCorruptedPDFs()">Load Report</button>
+                <select id="corruptedDriveFilter"><option value="" id="allDrivesOption">All Drives</option></select>
+                <button id="loadCorruptedPDFsBtn">Load Report</button>
             </div>
             <div id="corruptedPDFsContent"><div class="loading">Loading...</div></div>
         </div>
         <script>
+            // Get translations object from sync page (same structure)
+            // We'll include a minimal version here for reports
+            const translations = {
+                en: {
+                    reports: 'Reports',
+                    activities: 'Activities',
+                    spaceSaved: 'Space Saved',
+                    operations: 'Operations',
+                    corruptedPDFs: 'Corrupted PDFs',
+                    backToSync: '← Back to Sync',
+                    loadActivities: 'Load Activities',
+                    loadReport: 'Load Report',
+                    allTypes: 'All Types',
+                    allDrives: 'All Drives',
+                    limit: 'Limit',
+                    loading: 'Loading...',
+                    noData: 'No data available',
+                    totalSpaceSaved: 'Total Space Saved',
+                    totalOperations: 'Total Operations',
+                    totalCorrupted: 'Total Corrupted',
+                    totalSize: 'Total Size',
+                    breakdown: 'Breakdown',
+                    activityType: 'Activity Type',
+                    description: 'Description',
+                    date: 'Date',
+                    spaceSaved: 'Space Saved',
+                    operations: 'Operations',
+                    activityCount: 'Activity Count',
+                    drive: 'Drive',
+                    filePath: 'File Path',
+                    size: 'Size',
+                    noCorruptedPDFs: 'No corrupted PDFs found',
+                    error: 'Error',
+                    loggedInAs: 'Logged in as: {0} ({1})',
+                    language: 'Language:'
+                },
+                de: {
+                    reports: 'Berichte',
+                    activities: 'Aktivitäten',
+                    spaceSaved: 'Gespeicherter Speicherplatz',
+                    operations: 'Vorgänge',
+                    corruptedPDFs: 'Beschädigte PDFs',
+                    backToSync: '← Zurück zur Synchronisation',
+                    loadActivities: 'Aktivitäten laden',
+                    loadReport: 'Bericht laden',
+                    allTypes: 'Alle Typen',
+                    allDrives: 'Alle Laufwerke',
+                    limit: 'Limit',
+                    loading: 'Lädt...',
+                    noData: 'Keine Daten verfügbar',
+                    totalSpaceSaved: 'Gesamter gespeicherter Speicherplatz',
+                    totalOperations: 'Gesamtvorgänge',
+                    totalCorrupted: 'Gesamt beschädigt',
+                    totalSize: 'Gesamtgröße',
+                    breakdown: 'Aufschlüsselung',
+                    activityType: 'Aktivitätstyp',
+                    description: 'Beschreibung',
+                    date: 'Datum',
+                    spaceSaved: 'Gespeicherter Speicherplatz',
+                    operations: 'Vorgänge',
+                    activityCount: 'Aktivitätsanzahl',
+                    drive: 'Laufwerk',
+                    filePath: 'Dateipfad',
+                    size: 'Größe',
+                    noCorruptedPDFs: 'Keine beschädigten PDFs gefunden',
+                    error: 'Fehler',
+                    loggedInAs: 'Angemeldet als: {0} ({1})',
+                    language: 'Sprache:'
+                },
+                fr: {
+                    reports: 'Rapports',
+                    activities: 'Activités',
+                    spaceSaved: 'Espace libéré',
+                    operations: 'Opérations',
+                    corruptedPDFs: 'PDFs corrompus',
+                    backToSync: '← Retour à la synchronisation',
+                    loadActivities: 'Charger les activités',
+                    loadReport: 'Charger le rapport',
+                    allTypes: 'Tous les types',
+                    allDrives: 'Tous les lecteurs',
+                    limit: 'Limite',
+                    loading: 'Chargement...',
+                    noData: 'Aucune donnée disponible',
+                    totalSpaceSaved: 'Espace total libéré',
+                    totalOperations: 'Total des opérations',
+                    totalCorrupted: 'Total corrompu',
+                    totalSize: 'Taille totale',
+                    breakdown: 'Répartition',
+                    activityType: 'Type d\\'activité',
+                    description: 'Description',
+                    date: 'Date',
+                    spaceSaved: 'Espace libéré',
+                    operations: 'Opérations',
+                    activityCount: 'Nombre d\\'activités',
+                    drive: 'Lecteur',
+                    filePath: 'Chemin du fichier',
+                    size: 'Taille',
+                    noCorruptedPDFs: 'Aucun PDF corrompu trouvé',
+                    error: 'Erreur',
+                    loggedInAs: 'Connecté en tant que: {0} ({1})',
+                    language: 'Langue:'
+                },
+                es: {
+                    reports: 'Informes',
+                    activities: 'Actividades',
+                    spaceSaved: 'Espacio liberado',
+                    operations: 'Operaciones',
+                    corruptedPDFs: 'PDFs corruptos',
+                    backToSync: '← Volver a sincronización',
+                    loadActivities: 'Cargar actividades',
+                    loadReport: 'Cargar informe',
+                    allTypes: 'Todos los tipos',
+                    allDrives: 'Todas las unidades',
+                    limit: 'Límite',
+                    loading: 'Cargando...',
+                    noData: 'No hay datos disponibles',
+                    totalSpaceSaved: 'Espacio total liberado',
+                    totalOperations: 'Total de operaciones',
+                    totalCorrupted: 'Total corrupto',
+                    totalSize: 'Tamaño total',
+                    breakdown: 'Desglose',
+                    activityType: 'Tipo de actividad',
+                    description: 'Descripción',
+                    date: 'Fecha',
+                    spaceSaved: 'Espacio liberado',
+                    operations: 'Operaciones',
+                    activityCount: 'Cantidad de actividades',
+                    drive: 'Unidad',
+                    filePath: 'Ruta del archivo',
+                    size: 'Tamaño',
+                    noCorruptedPDFs: 'No se encontraron PDFs corruptos',
+                    error: 'Error',
+                    loggedInAs: 'Conectado como: {0} ({1})',
+                    language: 'Idioma:'
+                },
+                it: {
+                    reports: 'Rapporti',
+                    activities: 'Attività',
+                    spaceSaved: 'Spazio liberato',
+                    operations: 'Operazioni',
+                    corruptedPDFs: 'PDF corrotti',
+                    backToSync: '← Torna alla sincronizzazione',
+                    loadActivities: 'Carica attività',
+                    loadReport: 'Carica rapporto',
+                    allTypes: 'Tutti i tipi',
+                    allDrives: 'Tutte le unità',
+                    limit: 'Limite',
+                    loading: 'Caricamento...',
+                    noData: 'Nessun dato disponibile',
+                    totalSpaceSaved: 'Spazio totale liberato',
+                    totalOperations: 'Totale operazioni',
+                    totalCorrupted: 'Totale corrotto',
+                    totalSize: 'Dimensione totale',
+                    breakdown: 'Dettaglio',
+                    activityType: 'Tipo di attività',
+                    description: 'Descrizione',
+                    date: 'Data',
+                    spaceSaved: 'Spazio liberato',
+                    operations: 'Operazioni',
+                    activityCount: 'Conteggio attività',
+                    drive: 'Unità',
+                    filePath: 'Percorso file',
+                    size: 'Dimensione',
+                    noCorruptedPDFs: 'Nessun PDF corrotto trovato',
+                    error: 'Errore',
+                    loggedInAs: 'Connesso come: {0} ({1})',
+                    language: 'Lingua:'
+                },
+                ru: {
+                    reports: 'Отчеты',
+                    activities: 'Активности',
+                    spaceSaved: 'Освобожденное место',
+                    operations: 'Операции',
+                    corruptedPDFs: 'Поврежденные PDF',
+                    backToSync: '← Назад к синхронизации',
+                    loadActivities: 'Загрузить активности',
+                    loadReport: 'Загрузить отчет',
+                    allTypes: 'Все типы',
+                    allDrives: 'Все диски',
+                    limit: 'Лимит',
+                    loading: 'Загрузка...',
+                    noData: 'Нет данных',
+                    totalSpaceSaved: 'Всего освобождено места',
+                    totalOperations: 'Всего операций',
+                    totalCorrupted: 'Всего повреждено',
+                    totalSize: 'Общий размер',
+                    breakdown: 'Разбивка',
+                    activityType: 'Тип активности',
+                    description: 'Описание',
+                    date: 'Дата',
+                    spaceSaved: 'Освобожденное место',
+                    operations: 'Операции',
+                    activityCount: 'Количество активностей',
+                    drive: 'Диск',
+                    filePath: 'Путь к файлу',
+                    size: 'Размер',
+                    noCorruptedPDFs: 'Поврежденных PDF не найдено',
+                    error: 'Ошибка',
+                    loggedInAs: 'Вход выполнен как: {0} ({1})',
+                    language: 'Язык:'
+                }
+            };
+            
+            // Initialize user variables first
             const token = localStorage.getItem('access_token');
             const userRole = localStorage.getItem('user_role') || 'readonly';
             const username = localStorage.getItem('username') || '';
@@ -6846,6 +7202,87 @@ async def reports_page():
                 alert('Access denied. Admin privileges required.');
                 window.location.href = '/sync';
             }
+            
+            // Get language from localStorage (same key as sync page)
+            // Check both keys for compatibility
+            let currentLanguage = localStorage.getItem('docuSync_language') || localStorage.getItem('language');
+            if (!currentLanguage) {
+                currentLanguage = 'en';
+            }
+            // Save to both keys for consistency
+            localStorage.setItem('docuSync_language', currentLanguage);
+            localStorage.setItem('language', currentLanguage);
+            
+            function formatMessage(key, ...args) {
+                const t = translations[currentLanguage] || translations.en;
+                let message = t[key] || key;
+                args.forEach((arg, i) => {
+                    message = message.replace(`{${i}}`, arg);
+                });
+                return message;
+            }
+            
+            function applyTranslations(lang) {
+                const t = translations[lang] || translations.en;
+                currentLanguage = lang;
+                // Save to both keys for consistency with sync page
+                localStorage.setItem('docuSync_language', lang);
+                localStorage.setItem('language', lang);
+                
+                // Update page elements
+                const reportsTitle = document.getElementById('reportsTitle');
+                if (reportsTitle) reportsTitle.textContent = t.reports;
+                
+                const backToSyncLink = document.getElementById('backToSyncLink');
+                if (backToSyncLink) backToSyncLink.textContent = t.backToSync;
+                
+                // Update tab buttons
+                const tabActivities = document.getElementById('tabActivities');
+                if (tabActivities) tabActivities.textContent = t.activities;
+                
+                const tabSpaceSaved = document.getElementById('tabSpaceSaved');
+                if (tabSpaceSaved) tabSpaceSaved.textContent = t.spaceSaved;
+                
+                const tabOperations = document.getElementById('tabOperations');
+                if (tabOperations) tabOperations.textContent = t.operations;
+                
+                const tabCorruptedPDFs = document.getElementById('tabCorruptedPDFs');
+                if (tabCorruptedPDFs) tabCorruptedPDFs.textContent = t.corruptedPDFs;
+                
+                // Update filter options
+                const allTypesOption = document.getElementById('allTypesOption');
+                if (allTypesOption) allTypesOption.textContent = t.allTypes;
+                
+                const allDrivesOption = document.getElementById('allDrivesOption');
+                if (allDrivesOption) allDrivesOption.textContent = t.allDrives;
+                
+                // Update all buttons
+                const loadActivitiesBtn = document.getElementById('loadActivitiesBtn');
+                if (loadActivitiesBtn) loadActivitiesBtn.textContent = t.loadActivities;
+                
+                const loadSpaceSavedBtn = document.getElementById('loadSpaceSavedBtn');
+                if (loadSpaceSavedBtn) loadSpaceSavedBtn.textContent = t.loadReport;
+                
+                const loadOperationsBtn = document.getElementById('loadOperationsBtn');
+                if (loadOperationsBtn) loadOperationsBtn.textContent = t.loadReport;
+                
+                const loadCorruptedPDFsBtn = document.getElementById('loadCorruptedPDFsBtn');
+                if (loadCorruptedPDFsBtn) loadCorruptedPDFsBtn.textContent = t.loadReport;
+                
+                // Update input placeholder
+                const activitiesLimit = document.getElementById('activitiesLimit');
+                if (activitiesLimit) activitiesLimit.placeholder = t.limit;
+                
+                // Update user info
+                const userInfo = document.querySelector('.user-info');
+                if (userInfo && username) {
+                    userInfo.textContent = formatMessage('loggedInAs', username, userRole);
+                }
+            }
+            
+            // Initialize language - apply translations immediately
+            // Language is managed from the main sync page, reports page just uses it
+            applyTranslations(currentLanguage);
             function formatBytes(bytes) {
                 if (bytes === 0) return '0 B';
                 const k = 1024;
@@ -6863,27 +7300,31 @@ async def reports_page():
                     if (tabName === 'activities') loadActivities();
                     else if (tabName === 'space-saved') loadSpaceSaved();
                     else if (tabName === 'operations') loadOperations();
-                    else if (tabName === 'corrupted-pdfs') loadCorruptedPDFs();
+                    else if (tabName === 'corrupted-pdfs') {
+                        populateDriveFilter();
+                        loadCorruptedPDFs();
+                    }
                 });
             });
             async function loadActivities() {
                 const content = document.getElementById('activitiesContent');
-                content.innerHTML = '<div class="loading">Loading...</div>';
+                const t = translations[currentLanguage] || translations.en;
+                content.innerHTML = '<div class="loading">' + t.loading + '</div>';
                 const activityType = document.getElementById('activityTypeFilter').value;
                 const limit = document.getElementById('activitiesLimit').value || 100;
                 try {
                     let url = `/api/reports/activities?limit=${limit}`;
                     if (activityType) url += `&activity_type=${activityType}`;
                     const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-                    if (!response.ok) throw new Error('Failed to load activities');
+                    if (!response.ok) throw new Error(t.activitiesReport || 'Failed to load activities');
                     const activities = await response.json();
                     if (activities.length === 0) {
-                        content.innerHTML = '<div class="no-data">No data available</div>';
+                        content.innerHTML = '<div class="no-data">' + t.noData + '</div>';
                         return;
                     }
                     const uniqueTypes = [...new Set(activities.map(a => a.activity_type))];
                     const typeFilter = document.getElementById('activityTypeFilter');
-                    typeFilter.innerHTML = '<option value="">All Types</option>';
+                    typeFilter.innerHTML = '<option value="">' + t.allTypes + '</option>';
                     uniqueTypes.forEach(type => {
                         const option = document.createElement('option');
                         option.value = type;
@@ -6891,19 +7332,20 @@ async def reports_page():
                         typeFilter.appendChild(option);
                     });
                     typeFilter.value = activityType;
-                    let html = '<table><thead><tr><th>Activity Type</th><th>Description</th><th>Space Saved</th><th>Operations</th><th>Date</th></tr></thead><tbody>';
+                    let html = '<table><thead><tr><th>' + t.activityType + '</th><th>' + t.description + '</th><th>' + t.spaceSaved + '</th><th>' + t.operations + '</th><th>' + t.date + '</th></tr></thead><tbody>';
                     activities.forEach(activity => {
                         html += `<tr><td>${activity.activity_type}</td><td>${(activity.description || '').substring(0, 60)}</td><td>${formatBytes(activity.space_saved_bytes || 0)}</td><td>${activity.operation_count}</td><td>${new Date(activity.created_at).toLocaleString()}</td></tr>`;
                     });
                     html += '</tbody></table>';
                     content.innerHTML = html;
                 } catch (error) {
-                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                    content.innerHTML = '<div class="no-data">' + t.error + ': ' + error.message + '</div>';
                 }
             }
             async function loadSpaceSaved() {
                 const content = document.getElementById('spaceSavedContent');
-                content.innerHTML = '<div class="loading">Loading...</div>';
+                const t = translations[currentLanguage] || translations.en;
+                content.innerHTML = '<div class="loading">' + t.loading + '</div>';
                 const startDate = document.getElementById('spaceStartDate').value;
                 const endDate = document.getElementById('spaceEndDate').value;
                 try {
@@ -6911,11 +7353,11 @@ async def reports_page():
                     if (startDate) url += `?start_date=${startDate}`;
                     if (endDate) url += (startDate ? '&' : '?') + `end_date=${endDate}`;
                     const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-                    if (!response.ok) throw new Error('Failed to load space saved report');
+                    if (!response.ok) throw new Error(t.spaceSavedReport || 'Failed to load space saved report');
                     const report = await response.json();
-                    let html = '<div class="stats"><div class="stat-card"><h3>Total Space Saved</h3><div class="value">' + formatBytes(report.total_space_saved_bytes || 0) + '</div></div><div class="stat-card"><h3>Total Operations</h3><div class="value">' + (report.total_operations || 0) + '</div></div></div>';
+                    let html = '<div class="stats"><div class="stat-card"><h3>' + t.totalSpaceSaved + '</h3><div class="value">' + formatBytes(report.total_space_saved_bytes || 0) + '</div></div><div class="stat-card"><h3>' + t.totalOperations + '</h3><div class="value">' + (report.total_operations || 0) + '</div></div></div>';
                     if (report.breakdown && Object.keys(report.breakdown).length > 0) {
-                        html += '<h3>Breakdown</h3><table><thead><tr><th>Activity Type</th><th>Space Saved</th><th>Operations</th></tr></thead><tbody>';
+                        html += '<h3>' + t.breakdown + '</h3><table><thead><tr><th>' + t.activityType + '</th><th>' + t.spaceSaved + '</th><th>' + t.operations + '</th></tr></thead><tbody>';
                         for (const [type, data] of Object.entries(report.breakdown)) {
                             html += `<tr><td>${type}</td><td>${formatBytes(data.space_saved_bytes || 0)}</td><td>${data.operation_count || 0}</td></tr>`;
                         }
@@ -6923,12 +7365,13 @@ async def reports_page():
                     }
                     content.innerHTML = html;
                 } catch (error) {
-                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                    content.innerHTML = '<div class="no-data">' + t.error + ': ' + error.message + '</div>';
                 }
             }
             async function loadOperations() {
                 const content = document.getElementById('operationsContent');
-                content.innerHTML = '<div class="loading">Loading...</div>';
+                const t = translations[currentLanguage] || translations.en;
+                content.innerHTML = '<div class="loading">' + t.loading + '</div>';
                 const startDate = document.getElementById('opsStartDate').value;
                 const endDate = document.getElementById('opsEndDate').value;
                 try {
@@ -6936,60 +7379,91 @@ async def reports_page():
                     if (startDate) url += `?start_date=${startDate}`;
                     if (endDate) url += (startDate ? '&' : '?') + `end_date=${endDate}`;
                     const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-                    if (!response.ok) throw new Error('Failed to load operations report');
+                    if (!response.ok) throw new Error(t.operationsReport || 'Failed to load operations report');
                     const report = await response.json();
                     if (Object.keys(report).length === 0) {
-                        content.innerHTML = '<div class="no-data">No data available</div>';
+                        content.innerHTML = '<div class="no-data">' + t.noData + '</div>';
                         return;
                     }
-                    let html = '<table><thead><tr><th>Activity Type</th><th>Activity Count</th><th>Total Operations</th></tr></thead><tbody>';
+                    let html = '<table><thead><tr><th>' + t.activityType + '</th><th>' + t.activityCount + '</th><th>' + t.totalOperations + '</th></tr></thead><tbody>';
                     for (const [type, data] of Object.entries(report)) {
                         html += `<tr><td>${type}</td><td>${data.activity_count || 0}</td><td>${data.total_operations || 0}</td></tr>`;
                     }
                     html += '</tbody></table>';
                     content.innerHTML = html;
                 } catch (error) {
-                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                    content.innerHTML = '<div class="no-data">' + t.error + ': ' + error.message + '</div>';
                 }
             }
+            async function loadAvailableDrives() {
+                try {
+                    const response = await fetch('/api/drives', { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!response.ok) return [];
+                    const data = await response.json();
+                    return data.drives || [];
+                } catch (error) {
+                    console.error('Error loading drives:', error);
+                    return [];
+                }
+            }
+            
+            async function populateDriveFilter() {
+                const driveFilter = document.getElementById('corruptedDriveFilter');
+                if (!driveFilter) return;
+                const t = translations[currentLanguage] || translations.en;
+                
+                // Load available drives
+                const drives = await loadAvailableDrives();
+                driveFilter.innerHTML = '<option value="">' + t.allDrives + '</option>';
+                drives.forEach(d => {
+                    const option = document.createElement('option');
+                    option.value = d;
+                    option.textContent = d + ':\\\\';
+                    driveFilter.appendChild(option);
+                });
+            }
+            
             async function loadCorruptedPDFs() {
                 const content = document.getElementById('corruptedPDFsContent');
-                content.innerHTML = '<div class="loading">Loading...</div>';
+                const t = translations[currentLanguage] || translations.en;
+                content.innerHTML = '<div class="loading">' + t.loading + '</div>';
                 const drive = document.getElementById('corruptedDriveFilter').value;
                 try {
                     let url = '/api/reports/corrupted-pdfs';
                     if (drive) url += `?drive=${drive}`;
                     const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
-                    if (!response.ok) throw new Error('Failed to load corrupted PDFs report');
-                    const pdfs = await response.json();
-                    if (!pdfs || pdfs.length === 0) {
-                        content.innerHTML = '<div class="no-data">No data available</div>';
+                    if (!response.ok) throw new Error(t.corruptedPDFsReport || 'Failed to load corrupted PDFs report');
+                    const report = await response.json();
+                    if (!report || !report.files || report.files.length === 0) {
+                        content.innerHTML = '<div class="no-data">' + t.noCorruptedPDFs + '</div>';
                         return;
                     }
-                    const uniqueDrives = [...new Set(pdfs.map(p => p.drive))];
-                    const driveFilter = document.getElementById('corruptedDriveFilter');
-                    driveFilter.innerHTML = '<option value="">All Drives</option>';
-                    uniqueDrives.forEach(d => {
-                        const option = document.createElement('option');
-                        option.value = d;
-                        option.textContent = d;
-                        driveFilter.appendChild(option);
-                    });
-                    driveFilter.value = drive;
-                    let html = '<table><thead><tr><th>Drive</th><th>File Path</th><th>Size</th></tr></thead><tbody>';
+                    const pdfs = report.files;
+                    let html = '<div class="stats"><div class="stat-card"><h3>' + t.totalCorrupted + '</h3><div class="value">' + (report.total_corrupted || 0) + '</div></div><div class="stat-card"><h3>' + t.totalSize + '</h3><div class="value">' + formatBytes(report.total_size_bytes || 0) + '</div></div></div>';
+                    html += '<table><thead><tr><th>' + t.drive + '</th><th>' + t.filePath + '</th><th>' + t.size + '</th></tr></thead><tbody>';
                     pdfs.forEach(pdf => {
                         html += `<tr><td>${pdf.drive}</td><td>${pdf.file_path}</td><td>${formatBytes(pdf.size || 0)}</td></tr>`;
                     });
                     html += '</tbody></table>';
                     content.innerHTML = html;
                 } catch (error) {
-                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                    content.innerHTML = '<div class="no-data">' + t.error + ': ' + error.message + '</div>';
                 }
             }
-            const userInfo = document.querySelector('.user-info');
-            if (userInfo && username) {
-                userInfo.textContent = `Logged in as: ${username} (${userRole})`;
-            }
+            // Set up button event listeners
+            document.getElementById('loadActivitiesBtn')?.addEventListener('click', loadActivities);
+            document.getElementById('loadSpaceSavedBtn')?.addEventListener('click', loadSpaceSaved);
+            document.getElementById('loadOperationsBtn')?.addEventListener('click', loadOperations);
+            document.getElementById('loadCorruptedPDFsBtn')?.addEventListener('click', loadCorruptedPDFs);
+            
+            // Ensure all buttons are translated on page load
+            // This is a fallback in case translations weren't applied yet
+            setTimeout(() => {
+                applyTranslations(currentLanguage);
+            }, 100);
+            
+            // Populate drive filter on page load
+            populateDriveFilter();
             loadActivities();
         </script>
     </body>

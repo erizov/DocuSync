@@ -11,6 +11,7 @@ from app.file_scanner import extract_pdf_text, extract_pdf_author
 def is_pdf_corrupted(file_path: str) -> bool:
     """
     Check if a PDF file is corrupted.
+    Optimized version that only checks if PDF can be opened.
 
     Args:
         file_path: Path to the PDF file
@@ -25,24 +26,22 @@ def is_pdf_corrupted(file_path: str) -> bool:
         return False
 
     try:
-        # Try to extract text and author
-        text = extract_pdf_text(file_path)
-        author = extract_pdf_author(file_path)
-
-        # If both fail, it's likely corrupted
-        # But we also check if the file can be opened at all
+        # Quick check: just try to open and read basic structure
         import PyPDF2
         try:
             with open(file_path, "rb") as f:
                 pdf_reader = PyPDF2.PdfReader(f, strict=False)
-                # Try to access metadata or pages
-                _ = pdf_reader.metadata
-                if len(pdf_reader.pages) == 0:
+                # Try to access basic structure
+                num_pages = len(pdf_reader.pages)
+                if num_pages == 0:
                     return True  # PDF with no pages is suspicious
-                # Try to access first page
-                _ = pdf_reader.pages[0]
+                # Try to access first page (quick check)
+                try:
+                    _ = pdf_reader.pages[0]
+                except Exception:
+                    return True  # Can't access first page
         except Exception:
-            return True
+            return True  # Can't open PDF at all
 
         # If we got here, PDF seems okay
         return False
@@ -52,15 +51,21 @@ def is_pdf_corrupted(file_path: str) -> bool:
         return True
 
 
-def find_corrupted_pdfs(drive: Optional[str] = None) -> List[Document]:
+def find_corrupted_pdfs(drive: Optional[str] = None, limit: Optional[int] = None) -> List[Document]:
     """
     Find corrupted PDF files in the database.
+    Only checks database and file existence - does not open PDF files.
+    
+    Returns PDFs that are in the database but:
+    - The file doesn't exist on disk, OR
+    - The file exists but has size 0 (likely corrupted)
 
     Args:
         drive: Filter by drive letter
+        limit: Maximum number of PDFs to return (for performance)
 
     Returns:
-        List of Document objects that are corrupted PDFs
+        List of Document objects that are likely corrupted PDFs
     """
     db = SessionLocal()
     try:
@@ -71,13 +76,29 @@ def find_corrupted_pdfs(drive: Optional[str] = None) -> List[Document]:
         if drive:
             query = query.filter(Document.drive == drive.upper())
 
+        # Get all PDFs from database (no limit on query, we'll filter after)
         pdf_documents = query.all()
+        
         corrupted = []
-
+        
+        # Only check file existence and size - don't open PDFs
         for doc in pdf_documents:
-            if os.path.exists(doc.file_path):
-                if is_pdf_corrupted(doc.file_path):
+            if not os.path.exists(doc.file_path):
+                # File doesn't exist - likely deleted or moved, consider it corrupted
+                corrupted.append(doc)
+            else:
+                try:
+                    file_size = os.path.getsize(doc.file_path)
+                    if file_size == 0:
+                        # File exists but has 0 size - likely corrupted
+                        corrupted.append(doc)
+                except (OSError, PermissionError):
+                    # Can't access file - consider it corrupted
                     corrupted.append(doc)
+            
+            # Apply limit after checking
+            if limit and len(corrupted) >= limit:
+                break
 
         return corrupted
     finally:
@@ -168,17 +189,19 @@ def remove_corrupted_pdf(file_path: str,
         return False
 
 
-def get_corrupted_pdf_report(drive: Optional[str] = None) -> dict:
+def get_corrupted_pdf_report(drive: Optional[str] = None, limit: Optional[int] = 1000) -> dict:
     """
     Get a report of corrupted PDF files.
+    Limited to 1000 PDFs by default for performance.
 
     Args:
         drive: Filter by drive letter
+        limit: Maximum number of PDFs to check (default 1000)
 
     Returns:
         Dictionary with corrupted PDF statistics
     """
-    corrupted = find_corrupted_pdfs(drive=drive)
+    corrupted = find_corrupted_pdfs(drive=drive, limit=limit)
 
     total_size = sum(
         os.path.getsize(doc.file_path)
