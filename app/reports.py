@@ -113,8 +113,8 @@ def get_space_saved_report(
             Activity.space_saved_bytes > 0
         ).first()
 
-        total_saved = result.total_saved or 0
-        total_operations = result.total_operations or 0
+        total_saved = result.total_saved if result and result.total_saved else 0
+        total_operations = result.total_operations if result and result.total_operations else 0
 
         # Get breakdown by activity type
         breakdown = db.query(
@@ -135,8 +135,8 @@ def get_space_saved_report(
 
         breakdown_dict = {
             item.activity_type: {
-                "space_saved_bytes": item.saved or 0,
-                "operation_count": item.count or 0
+                "space_saved_bytes": (item.saved if item.saved is not None else 0),
+                "operation_count": (item.count if item.count is not None else 0)
             }
             for item in breakdown
         }
@@ -182,8 +182,8 @@ def get_operations_report(
 
         return {
             item.activity_type: {
-                "activity_count": item.count or 0,
-                "total_operations": item.total_operations or 0
+                "activity_count": (item.count if item.count is not None else 0),
+                "total_operations": (item.total_operations if item.total_operations is not None else 0)
             }
             for item in results
         }

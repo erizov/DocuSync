@@ -262,6 +262,7 @@ Then access:
 **Web Interface Features:**
 - Multi-language support (English, German, French, Spanish, Italian, Russian)
 - User management (admin only)
+- Reports interface (admin only) - Activities, Space Saved, Operations, Corrupted PDFs
 - Logout functionality
 - Automatic inactivity timeout (1 hour)
 - Role-based UI visibility
@@ -281,6 +282,12 @@ Then access:
 - **Create User**: `POST /api/users`
 - **Update User**: `PUT /api/users/{user_id}`
 - **Delete User**: `DELETE /api/users/{user_id}`
+
+**Reports (Admin only):**
+- **Activities**: `GET /api/reports/activities?activity_type=X&limit=100`
+- **Space Saved**: `GET /api/reports/space-saved?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- **Operations**: `GET /api/reports/operations?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- **Corrupted PDFs**: `GET /api/reports/corrupted-pdfs?drive=D`
 
 **Authentication:**
 - **Login**: `POST /api/auth/login`

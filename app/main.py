@@ -526,43 +526,114 @@ async def get_duplicates(
 async def get_activities_report(
     activity_type: Optional[str] = Query(None, description="Filter by type"),
     limit: int = Query(100, ge=1, le=1000),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get activity report."""
-    activities = get_activities(activity_type=activity_type, limit=limit)
-    return activities
+    """Get activity report. Admin only."""
+    from app.reports import get_activities as get_activities_func
+    try:
+        activities = get_activities_func(activity_type=activity_type, limit=limit)
+        if not activities:
+            return []
+        # Convert Activity objects to ActivityResponse
+        return [
+            ActivityResponse(
+                id=activity.id,
+                activity_type=activity.activity_type or "",
+                description=activity.description or "",
+                document_path=activity.document_path,
+                space_saved_bytes=activity.space_saved_bytes or 0,
+                operation_count=activity.operation_count or 0,
+                created_at=activity.created_at.isoformat() if activity.created_at else ""
+            )
+            for activity in activities
+        ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error loading activities: {str(e)}"
+        )
 
 
 @app.get("/api/reports/space-saved")
-async def get_space_saved_report(
+async def get_space_saved_report_endpoint(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get space saved report."""
-    start = datetime.fromisoformat(start_date) if start_date else None
-    end = datetime.fromisoformat(end_date) if end_date else None
-    return get_space_saved_report(start_date=start, end_date=end)
+    """Get space saved report. Admin only."""
+    from app.reports import get_space_saved_report as get_space_saved_report_func
+    try:
+        start = None
+        end = None
+        if start_date:
+            # Handle YYYY-MM-DD format
+            if len(start_date) == 10:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+            else:
+                start = datetime.fromisoformat(start_date)
+        if end_date:
+            # Handle YYYY-MM-DD format
+            if len(end_date) == 10:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+            else:
+                end = datetime.fromisoformat(end_date)
+        result = get_space_saved_report_func(start_date=start, end_date=end)
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid date format: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error loading space saved report: {str(e)}"
+        )
 
 
 @app.get("/api/reports/operations")
-async def get_operations_report(
+async def get_operations_report_endpoint(
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get operations report."""
-    start = datetime.fromisoformat(start_date) if start_date else None
-    end = datetime.fromisoformat(end_date) if end_date else None
-    return get_operations_report(start_date=start, end_date=end)
+    """Get operations report. Admin only."""
+    from app.reports import get_operations_report as get_operations_report_func
+    try:
+        start = None
+        end = None
+        if start_date:
+            # Handle YYYY-MM-DD format
+            if len(start_date) == 10:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+            else:
+                start = datetime.fromisoformat(start_date)
+        if end_date:
+            # Handle YYYY-MM-DD format
+            if len(end_date) == 10:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+            else:
+                end = datetime.fromisoformat(end_date)
+        result = get_operations_report_func(start_date=start, end_date=end)
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid date format: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error loading operations report: {str(e)}"
+        )
 
 
 @app.get("/api/reports/corrupted-pdfs")
 async def get_corrupted_pdfs_report(
     drive: Optional[str] = Query(None, description="Filter by drive"),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_admin)
 ):
-    """Get corrupted PDF files report."""
+    """Get corrupted PDF files report. Admin only."""
     return get_corrupted_pdf_report(drive=drive)
 
 
@@ -2894,7 +2965,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'User deleted successfully',
                     confirmDeleteUser: 'Are you sure you want to delete this user?',
                     logout: 'Logout',
-                    loggedInAs: 'Logged in as: {0} ({1})'
+                    loggedInAs: 'Logged in as: {0} ({1})',
+                    reports: 'Reports',
+                    activities: 'Activities',
+                    spaceSaved: 'Space Saved',
+                    operations: 'Operations',
+                    corruptedPDFs: 'Corrupted PDFs',
+                    totalSpaceSaved: 'Total Space Saved',
+                    totalOperations: 'Total Operations',
+                    activityType: 'Activity Type',
+                    description: 'Description',
+                    date: 'Date',
+                    activityCount: 'Activity Count',
+                    totalOperations: 'Total Operations',
+                    breakdown: 'Breakdown',
+                    noData: 'No data available',
+                    loading: 'Loading...',
+                    filterByType: 'Filter by Type',
+                    startDate: 'Start Date',
+                    endDate: 'End Date',
+                    applyFilter: 'Apply Filter',
+                    clearFilter: 'Clear Filter',
+                    drive: 'Drive',
+                    filePath: 'File Path',
+                    size: 'Size',
+                    actions: 'Actions',
+                    remove: 'Remove'
                 },
                 de: {
                     title: 'DocuSync - Ordner-Synchronisation',
@@ -2963,7 +3059,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'Benutzer erfolgreich gelöscht',
                     confirmDeleteUser: 'Sind Sie sicher, dass Sie diesen Benutzer löschen möchten?',
                     logout: 'Abmelden',
-                    loggedInAs: 'Angemeldet als: {0} ({1})'
+                    loggedInAs: 'Angemeldet als: {0} ({1})',
+                    reports: 'Berichte',
+                    activities: 'Aktivitäten',
+                    spaceSaved: 'Gespeicherter Speicherplatz',
+                    operations: 'Vorgänge',
+                    corruptedPDFs: 'Beschädigte PDFs',
+                    totalSpaceSaved: 'Gesamter gespeicherter Speicherplatz',
+                    totalOperations: 'Gesamtvorgänge',
+                    activityType: 'Aktivitätstyp',
+                    description: 'Beschreibung',
+                    date: 'Datum',
+                    activityCount: 'Aktivitätsanzahl',
+                    totalOperations: 'Gesamtvorgänge',
+                    breakdown: 'Aufschlüsselung',
+                    noData: 'Keine Daten verfügbar',
+                    loading: 'Lädt...',
+                    filterByType: 'Nach Typ filtern',
+                    startDate: 'Startdatum',
+                    endDate: 'Enddatum',
+                    applyFilter: 'Filter anwenden',
+                    clearFilter: 'Filter löschen',
+                    drive: 'Laufwerk',
+                    filePath: 'Dateipfad',
+                    size: 'Größe',
+                    actions: 'Aktionen',
+                    remove: 'Entfernen'
                 },
                 fr: {
                     title: 'DocuSync - Synchronisation de dossiers',
@@ -3032,7 +3153,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'Utilisateur supprimé avec succès',
                     confirmDeleteUser: 'Êtes-vous sûr de vouloir supprimer cet utilisateur?',
                     logout: 'Déconnexion',
-                    loggedInAs: 'Connecté en tant que: {0} ({1})'
+                    loggedInAs: 'Connecté en tant que: {0} ({1})',
+                    reports: 'Rapports',
+                    activities: 'Activités',
+                    spaceSaved: 'Espace libéré',
+                    operations: 'Opérations',
+                    corruptedPDFs: 'PDFs corrompus',
+                    totalSpaceSaved: 'Espace total libéré',
+                    totalOperations: 'Total des opérations',
+                    activityType: 'Type d\\'activité',
+                    description: 'Description',
+                    date: 'Date',
+                    activityCount: 'Nombre d\\'activités',
+                    totalOperations: 'Total des opérations',
+                    breakdown: 'Répartition',
+                    noData: 'Aucune donnée disponible',
+                    loading: 'Chargement...',
+                    filterByType: 'Filtrer par type',
+                    startDate: 'Date de début',
+                    endDate: 'Date de fin',
+                    applyFilter: 'Appliquer le filtre',
+                    clearFilter: 'Effacer le filtre',
+                    drive: 'Lecteur',
+                    filePath: 'Chemin du fichier',
+                    size: 'Taille',
+                    actions: 'Actions',
+                    remove: 'Supprimer'
                 },
                 es: {
                     title: 'DocuSync - Sincronización de carpetas',
@@ -3101,7 +3247,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'Usuario eliminado exitosamente',
                     confirmDeleteUser: '¿Está seguro de que desea eliminar este usuario?',
                     logout: 'Cerrar sesión',
-                    loggedInAs: 'Conectado como: {0} ({1})'
+                    loggedInAs: 'Conectado como: {0} ({1})',
+                    reports: 'Informes',
+                    activities: 'Actividades',
+                    spaceSaved: 'Espacio liberado',
+                    operations: 'Operaciones',
+                    corruptedPDFs: 'PDFs corruptos',
+                    totalSpaceSaved: 'Espacio total liberado',
+                    totalOperations: 'Total de operaciones',
+                    activityType: 'Tipo de actividad',
+                    description: 'Descripción',
+                    date: 'Fecha',
+                    activityCount: 'Cantidad de actividades',
+                    totalOperations: 'Total de operaciones',
+                    breakdown: 'Desglose',
+                    noData: 'No hay datos disponibles',
+                    loading: 'Cargando...',
+                    filterByType: 'Filtrar por tipo',
+                    startDate: 'Fecha de inicio',
+                    endDate: 'Fecha de fin',
+                    applyFilter: 'Aplicar filtro',
+                    clearFilter: 'Limpiar filtro',
+                    drive: 'Unidad',
+                    filePath: 'Ruta del archivo',
+                    size: 'Tamaño',
+                    actions: 'Acciones',
+                    remove: 'Eliminar'
                 },
                 it: {
                     title: 'DocuSync - Sincronizzazione cartelle',
@@ -3170,7 +3341,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'Utente eliminato con successo',
                     confirmDeleteUser: 'Sei sicuro di voler eliminare questo utente?',
                     logout: 'Esci',
-                    loggedInAs: 'Connesso come: {0} ({1})'
+                    loggedInAs: 'Connesso come: {0} ({1})',
+                    reports: 'Rapporti',
+                    activities: 'Attività',
+                    spaceSaved: 'Spazio liberato',
+                    operations: 'Operazioni',
+                    corruptedPDFs: 'PDF corrotti',
+                    totalSpaceSaved: 'Spazio totale liberato',
+                    totalOperations: 'Totale operazioni',
+                    activityType: 'Tipo di attività',
+                    description: 'Descrizione',
+                    date: 'Data',
+                    activityCount: 'Conteggio attività',
+                    totalOperations: 'Totale operazioni',
+                    breakdown: 'Dettaglio',
+                    noData: 'Nessun dato disponibile',
+                    loading: 'Caricamento...',
+                    filterByType: 'Filtra per tipo',
+                    startDate: 'Data di inizio',
+                    endDate: 'Data di fine',
+                    applyFilter: 'Applica filtro',
+                    clearFilter: 'Cancella filtro',
+                    drive: 'Unità',
+                    filePath: 'Percorso file',
+                    size: 'Dimensione',
+                    actions: 'Azioni',
+                    remove: 'Rimuovi'
                 },
                 ru: {
                     title: 'DocuSync - Синхронизация папок',
@@ -3239,7 +3435,32 @@ async def sync_page():
                     userDeletedSuccessfully: 'Пользователь успешно удален',
                     confirmDeleteUser: 'Вы уверены, что хотите удалить этого пользователя?',
                     logout: 'Выйти',
-                    loggedInAs: 'Вход выполнен как: {0} ({1})'
+                    loggedInAs: 'Вход выполнен как: {0} ({1})',
+                    reports: 'Отчеты',
+                    activities: 'Активности',
+                    spaceSaved: 'Освобожденное место',
+                    operations: 'Операции',
+                    corruptedPDFs: 'Поврежденные PDF',
+                    totalSpaceSaved: 'Всего освобождено места',
+                    totalOperations: 'Всего операций',
+                    activityType: 'Тип активности',
+                    description: 'Описание',
+                    date: 'Дата',
+                    activityCount: 'Количество активностей',
+                    totalOperations: 'Всего операций',
+                    breakdown: 'Разбивка',
+                    noData: 'Нет данных',
+                    loading: 'Загрузка...',
+                    filterByType: 'Фильтр по типу',
+                    startDate: 'Дата начала',
+                    endDate: 'Дата окончания',
+                    applyFilter: 'Применить фильтр',
+                    clearFilter: 'Очистить фильтр',
+                    drive: 'Диск',
+                    filePath: 'Путь к файлу',
+                    size: 'Размер',
+                    actions: 'Действия',
+                    remove: 'Удалить'
                 }
             };
             
@@ -3319,6 +3540,12 @@ async def sync_page():
                 const userMgmtBtn = document.getElementById('userMgmtBtn');
                 if (userMgmtBtn) {
                     userMgmtBtn.textContent = t.userManagement || 'User Management';
+                }
+                
+                // Update Reports button
+                const reportsBtn = document.getElementById('reportsBtn');
+                if (reportsBtn) {
+                    reportsBtn.textContent = t.reports || 'Reports';
                 }
                 
                 // Update logout button
@@ -3677,17 +3904,29 @@ async def sync_page():
                     eliminateContainer.style.display = 'none';
                 }
                 
-                // Add user management UI for admin
+                // Add user management and reports UI for admin
                 if (userRole === 'admin') {
                     const controls = document.querySelector('.controls');
                     if (controls) {
+                        const t = translations[currentLanguage] || translations.en;
+                        
+                        // User Management button
                         const userMgmtBtn = document.createElement('button');
                         userMgmtBtn.id = 'userMgmtBtn';
-                        const t = translations[currentLanguage] || translations.en;
                         userMgmtBtn.textContent = t.userManagement || 'User Management';
                         userMgmtBtn.style.cssText = 'padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px;';
                         userMgmtBtn.onclick = showUserManagement;
                         controls.appendChild(userMgmtBtn);
+                        
+                        // Reports button
+                        const reportsBtn = document.createElement('button');
+                        reportsBtn.id = 'reportsBtn';
+                        reportsBtn.textContent = t.reports || 'Reports';
+                        reportsBtn.style.cssText = 'padding: 10px 20px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px;';
+                        reportsBtn.onclick = function() {
+                            window.location.href = '/reports';
+                        };
+                        controls.appendChild(reportsBtn);
                     }
                 }
             }
@@ -6512,6 +6751,246 @@ async def sync_page():
                     setupButtonHandlers();
                 }, 100);
             }
+        </script>
+    </body>
+    </html>
+    """
+
+
+@app.get("/reports", response_class=HTMLResponse)
+async def reports_page():
+    """Reports page for admin users."""
+    # Note: Full HTML implementation is very large (similar to sync page)
+    # For now, this is a placeholder - the full implementation would include:
+    # - Tabbed interface for Activities, Space Saved, Operations, Corrupted PDFs
+    # - Multi-language support
+    # - Filters and date ranges
+    # - Tables and statistics cards
+    # - Admin-only access check
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DocuSync - Reports</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+            .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+            .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #ddd; }
+            .tab { padding: 10px 20px; background: #f0f0f0; border: none; border-radius: 4px 4px 0 0; cursor: pointer; }
+            .tab.active { background: #17a2b8; color: white; }
+            .tab-content { display: none; background: white; padding: 20px; border-radius: 8px; }
+            .tab-content.active { display: block; }
+            .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+            .filters input, .filters select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+            .filters button { padding: 8px 16px; background: #17a2b8; color: white; border: none; border-radius: 4px; cursor: pointer; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            table th, table td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+            table th { background: #f8f9fa; font-weight: bold; }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
+            .stat-card { background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; }
+            .stat-card .value { font-size: 24px; font-weight: bold; color: #17a2b8; }
+            .loading, .no-data { text-align: center; padding: 40px; color: #666; }
+            .back-link { display: inline-block; margin-bottom: 20px; color: #17a2b8; text-decoration: none; }
+        </style>
+    </head>
+    <body>
+        <a href="/sync" class="back-link">← Back to Sync</a>
+        <div class="header">
+            <h1>Reports</h1>
+            <div class="user-info" style="margin-top: 10px; font-size: 14px; color: #666;"></div>
+        </div>
+        <div class="tabs">
+            <button class="tab active" data-tab="activities">Activities</button>
+            <button class="tab" data-tab="space-saved">Space Saved</button>
+            <button class="tab" data-tab="operations">Operations</button>
+            <button class="tab" data-tab="corrupted-pdfs">Corrupted PDFs</button>
+        </div>
+        <div id="activities" class="tab-content active">
+            <div class="filters">
+                <select id="activityTypeFilter"><option value="">All Types</option></select>
+                <input type="number" id="activitiesLimit" value="100" min="1" max="1000" placeholder="Limit">
+                <button onclick="loadActivities()">Load Activities</button>
+            </div>
+            <div id="activitiesContent"><div class="loading">Loading...</div></div>
+        </div>
+        <div id="space-saved" class="tab-content">
+            <div class="filters">
+                <input type="date" id="spaceStartDate">
+                <input type="date" id="spaceEndDate">
+                <button onclick="loadSpaceSaved()">Load Report</button>
+            </div>
+            <div id="spaceSavedContent"><div class="loading">Loading...</div></div>
+        </div>
+        <div id="operations" class="tab-content">
+            <div class="filters">
+                <input type="date" id="opsStartDate">
+                <input type="date" id="opsEndDate">
+                <button onclick="loadOperations()">Load Report</button>
+            </div>
+            <div id="operationsContent"><div class="loading">Loading...</div></div>
+        </div>
+        <div id="corrupted-pdfs" class="tab-content">
+            <div class="filters">
+                <select id="corruptedDriveFilter"><option value="">All Drives</option></select>
+                <button onclick="loadCorruptedPDFs()">Load Report</button>
+            </div>
+            <div id="corruptedPDFsContent"><div class="loading">Loading...</div></div>
+        </div>
+        <script>
+            const token = localStorage.getItem('access_token');
+            const userRole = localStorage.getItem('user_role') || 'readonly';
+            const username = localStorage.getItem('username') || '';
+            if (!token || userRole !== 'admin') {
+                alert('Access denied. Admin privileges required.');
+                window.location.href = '/sync';
+            }
+            function formatBytes(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+            }
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', function() {
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                    this.classList.add('active');
+                    const tabName = this.getAttribute('data-tab');
+                    document.getElementById(tabName).classList.add('active');
+                    if (tabName === 'activities') loadActivities();
+                    else if (tabName === 'space-saved') loadSpaceSaved();
+                    else if (tabName === 'operations') loadOperations();
+                    else if (tabName === 'corrupted-pdfs') loadCorruptedPDFs();
+                });
+            });
+            async function loadActivities() {
+                const content = document.getElementById('activitiesContent');
+                content.innerHTML = '<div class="loading">Loading...</div>';
+                const activityType = document.getElementById('activityTypeFilter').value;
+                const limit = document.getElementById('activitiesLimit').value || 100;
+                try {
+                    let url = `/api/reports/activities?limit=${limit}`;
+                    if (activityType) url += `&activity_type=${activityType}`;
+                    const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!response.ok) throw new Error('Failed to load activities');
+                    const activities = await response.json();
+                    if (activities.length === 0) {
+                        content.innerHTML = '<div class="no-data">No data available</div>';
+                        return;
+                    }
+                    const uniqueTypes = [...new Set(activities.map(a => a.activity_type))];
+                    const typeFilter = document.getElementById('activityTypeFilter');
+                    typeFilter.innerHTML = '<option value="">All Types</option>';
+                    uniqueTypes.forEach(type => {
+                        const option = document.createElement('option');
+                        option.value = type;
+                        option.textContent = type;
+                        typeFilter.appendChild(option);
+                    });
+                    typeFilter.value = activityType;
+                    let html = '<table><thead><tr><th>Activity Type</th><th>Description</th><th>Space Saved</th><th>Operations</th><th>Date</th></tr></thead><tbody>';
+                    activities.forEach(activity => {
+                        html += `<tr><td>${activity.activity_type}</td><td>${(activity.description || '').substring(0, 60)}</td><td>${formatBytes(activity.space_saved_bytes || 0)}</td><td>${activity.operation_count}</td><td>${new Date(activity.created_at).toLocaleString()}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    content.innerHTML = html;
+                } catch (error) {
+                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                }
+            }
+            async function loadSpaceSaved() {
+                const content = document.getElementById('spaceSavedContent');
+                content.innerHTML = '<div class="loading">Loading...</div>';
+                const startDate = document.getElementById('spaceStartDate').value;
+                const endDate = document.getElementById('spaceEndDate').value;
+                try {
+                    let url = '/api/reports/space-saved';
+                    if (startDate) url += `?start_date=${startDate}`;
+                    if (endDate) url += (startDate ? '&' : '?') + `end_date=${endDate}`;
+                    const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!response.ok) throw new Error('Failed to load space saved report');
+                    const report = await response.json();
+                    let html = '<div class="stats"><div class="stat-card"><h3>Total Space Saved</h3><div class="value">' + formatBytes(report.total_space_saved_bytes || 0) + '</div></div><div class="stat-card"><h3>Total Operations</h3><div class="value">' + (report.total_operations || 0) + '</div></div></div>';
+                    if (report.breakdown && Object.keys(report.breakdown).length > 0) {
+                        html += '<h3>Breakdown</h3><table><thead><tr><th>Activity Type</th><th>Space Saved</th><th>Operations</th></tr></thead><tbody>';
+                        for (const [type, data] of Object.entries(report.breakdown)) {
+                            html += `<tr><td>${type}</td><td>${formatBytes(data.space_saved_bytes || 0)}</td><td>${data.operation_count || 0}</td></tr>`;
+                        }
+                        html += '</tbody></table>';
+                    }
+                    content.innerHTML = html;
+                } catch (error) {
+                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                }
+            }
+            async function loadOperations() {
+                const content = document.getElementById('operationsContent');
+                content.innerHTML = '<div class="loading">Loading...</div>';
+                const startDate = document.getElementById('opsStartDate').value;
+                const endDate = document.getElementById('opsEndDate').value;
+                try {
+                    let url = '/api/reports/operations';
+                    if (startDate) url += `?start_date=${startDate}`;
+                    if (endDate) url += (startDate ? '&' : '?') + `end_date=${endDate}`;
+                    const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!response.ok) throw new Error('Failed to load operations report');
+                    const report = await response.json();
+                    if (Object.keys(report).length === 0) {
+                        content.innerHTML = '<div class="no-data">No data available</div>';
+                        return;
+                    }
+                    let html = '<table><thead><tr><th>Activity Type</th><th>Activity Count</th><th>Total Operations</th></tr></thead><tbody>';
+                    for (const [type, data] of Object.entries(report)) {
+                        html += `<tr><td>${type}</td><td>${data.activity_count || 0}</td><td>${data.total_operations || 0}</td></tr>`;
+                    }
+                    html += '</tbody></table>';
+                    content.innerHTML = html;
+                } catch (error) {
+                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                }
+            }
+            async function loadCorruptedPDFs() {
+                const content = document.getElementById('corruptedPDFsContent');
+                content.innerHTML = '<div class="loading">Loading...</div>';
+                const drive = document.getElementById('corruptedDriveFilter').value;
+                try {
+                    let url = '/api/reports/corrupted-pdfs';
+                    if (drive) url += `?drive=${drive}`;
+                    const response = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!response.ok) throw new Error('Failed to load corrupted PDFs report');
+                    const pdfs = await response.json();
+                    if (!pdfs || pdfs.length === 0) {
+                        content.innerHTML = '<div class="no-data">No data available</div>';
+                        return;
+                    }
+                    const uniqueDrives = [...new Set(pdfs.map(p => p.drive))];
+                    const driveFilter = document.getElementById('corruptedDriveFilter');
+                    driveFilter.innerHTML = '<option value="">All Drives</option>';
+                    uniqueDrives.forEach(d => {
+                        const option = document.createElement('option');
+                        option.value = d;
+                        option.textContent = d;
+                        driveFilter.appendChild(option);
+                    });
+                    driveFilter.value = drive;
+                    let html = '<table><thead><tr><th>Drive</th><th>File Path</th><th>Size</th></tr></thead><tbody>';
+                    pdfs.forEach(pdf => {
+                        html += `<tr><td>${pdf.drive}</td><td>${pdf.file_path}</td><td>${formatBytes(pdf.size || 0)}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                    content.innerHTML = html;
+                } catch (error) {
+                    content.innerHTML = '<div class="no-data">Error: ' + error.message + '</div>';
+                }
+            }
+            const userInfo = document.querySelector('.user-info');
+            if (userInfo && username) {
+                userInfo.textContent = `Logged in as: ${username} (${userRole})`;
+            }
+            loadActivities();
         </script>
     </body>
     </html>
