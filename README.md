@@ -54,9 +54,10 @@ DocuSync is a powerful yet simple document management system that helps you orga
 ### 🌍 Multi-Language Support
 - **6 Languages Supported**: English, German, French, Spanish, Italian, Russian
 - **Dynamic Language Switching**: Change language on-the-fly without page reload
-- **Fully Translated Interface**: All UI elements, buttons, messages, and forms
-- **Language Persistence**: Selected language is saved in browser storage
+- **Fully Translated Interface**: All UI elements, buttons, messages, and forms across all pages
+- **Language Persistence**: Selected language is saved in browser storage and shared across all pages
 - **Auto-Detection**: Automatically detects browser language on first visit
+- **Centralized Language Control**: Language selector available only on main sync page; all other pages use the selected language automatically
 
 ### 🗄️ Database Storage
 - **SQLite Database**: Fast, local, no server required
@@ -260,9 +261,14 @@ Then access:
 - **Login Page**: http://localhost:8000/login
 
 **Web Interface Features:**
-- Multi-language support (English, German, French, Spanish, Italian, Russian)
+- Multi-language support (English, German, French, Spanish, Italian, Russian) - fully translated across all pages
+- Language selector on main sync page; all pages use the selected language automatically
 - User management (admin only)
 - Reports interface (admin only) - Activities, Space Saved, Operations, Corrupted PDFs
+  - All reports fully translated
+  - 60-second timeout for all report endpoints
+  - Activities report filters out entries with zero space saved
+  - Corrupted PDFs report checks database (fast, no file opening)
 - Logout functionality
 - Automatic inactivity timeout (1 hour)
 - Role-based UI visibility
@@ -285,9 +291,17 @@ Then access:
 
 **Reports (Admin only):**
 - **Activities**: `GET /api/reports/activities?activity_type=X&limit=100`
+  - Filters out activities with zero space saved
+  - Includes 'delete_duplicates' activity type
+  - 60-second timeout
 - **Space Saved**: `GET /api/reports/space-saved?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+  - 60-second timeout
 - **Operations**: `GET /api/reports/operations?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
-- **Corrupted PDFs**: `GET /api/reports/corrupted-pdfs?drive=D`
+  - 60-second timeout
+- **Corrupted PDFs**: `GET /api/reports/corrupted-pdfs?drive=D&limit=1000`
+  - Checks database and file existence only (fast, no PDF opening)
+  - 60-second timeout
+  - Returns PDFs that don't exist on disk or have size 0
 
 **Authentication:**
 - **Login**: `POST /api/auth/login`

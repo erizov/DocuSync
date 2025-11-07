@@ -184,18 +184,27 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
 - `GET /api/reports/activities` - Activity log
   - Query params: `activity_type` (optional), `limit` (1-1000, default 100)
   - Returns: List of ActivityResponse objects
-  - Error handling: Returns empty list if no activities, handles None values
+  - Filters out activities with zero space saved
+  - Includes 'delete_duplicates' activity type
+  - 60-second timeout using asyncio.wait_for
+  - Error handling: Returns empty list if no activities, handles None values, timeout errors
 - `GET /api/reports/space-saved` - Space saved report
   - Query params: `start_date`, `end_date` (YYYY-MM-DD format)
   - Returns: Dictionary with total_space_saved_bytes, total_operations, breakdown by activity_type
-  - Error handling: Handles None results when no matching activities
+  - 60-second timeout using asyncio.wait_for
+  - Error handling: Handles None results when no matching activities, timeout errors
 - `GET /api/reports/operations` - Operations report
   - Query params: `start_date`, `end_date` (YYYY-MM-DD format)
   - Returns: Dictionary with activity_type as keys, activity_count and total_operations as values
-  - Error handling: Handles None values in aggregate results
+  - 60-second timeout using asyncio.wait_for
+  - Error handling: Handles None values in aggregate results, timeout errors
 - `GET /api/reports/corrupted-pdfs` - Corrupted PDFs report
-  - Query params: `drive` (optional)
-  - Returns: List of corrupted PDF documents
+  - Query params: `drive` (optional), `limit` (1-5000, default 1000)
+  - Returns: Dictionary with total_corrupted, total_size_bytes, by_drive, and files array
+  - Checks database and file existence only (fast, no PDF opening)
+  - Returns PDFs that don't exist on disk or have size 0
+  - 60-second timeout using asyncio.wait_for
+  - Error handling: Handles timeout errors, file access errors
 
 ### 4.7 Web Pages
 - `GET /` - Redirects to `/login`
@@ -209,7 +218,7 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
 
 ### 5.1 Sync Page (`/sync`)
 - **Two-panel interface**: Folder1 vs Folder2 comparison
-- **Language selector**: 6 languages (en, de, fr, es, it, ru)
+- **Language selector**: 6 languages (en, de, fr, es, it, ru) - available only on this page
 - **Folder input**: Browse buttons for folder selection
 - **Sync strategy selector**: Keep Both, Keep Newest, Keep Largest
 - **Analyze button**: Analyzes differences between folders
@@ -217,6 +226,7 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
 - **Results display**: Shows files to copy, duplicates, conflicts
 - **Progress tracking**: Real-time sync progress with status panel
 - **Error handling**: Displays errors during sync operations
+- **Language persistence**: Selected language saved in localStorage and shared across all pages
 
 ### 5.2 Reports Page (`/reports`)
 - **Tabbed interface**: Activities, Space Saved, Operations, Corrupted PDFs
@@ -224,6 +234,10 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
 - **Statistics cards**: Total space saved, total operations
 - **Data tables**: Formatted display of report data
 - **Admin-only access**: Redirects non-admins
+- **Fully translated**: All buttons, labels, and text translated (uses language from localStorage)
+- **No language selector**: Language managed from main sync page
+- **60-second timeout**: All report endpoints have timeout protection
+- **Optimized corrupted PDFs**: Checks database only (fast, no file opening)
 
 ### 5.3 User Management (Modal on Sync Page)
 - **User list table**: Shows all users with role and active status
@@ -234,8 +248,12 @@ CREATE VIRTUAL TABLE documents_fts USING fts5(
 
 ### 5.4 Multi-Language Support
 - **Languages**: English, German, French, Spanish, Italian, Russian
-- **Translation keys**: All UI elements, buttons, messages, forms
+- **Translation keys**: All UI elements, buttons, messages, forms across all pages
 - **Dynamic switching**: Changes language without page reload
+- **Language selector**: Available only on main sync page (`/sync`)
+- **Language persistence**: Selected language saved in localStorage (`docuSync_language` key)
+- **Shared across pages**: All pages (sync, reports) use the same language preference
+- **Auto-detection**: Detects browser language on first visit
 - **Persistence**: Language preference stored in localStorage
 - **Formatting**: Supports placeholder replacement (e.g., `{0}`, `{1}`)
 

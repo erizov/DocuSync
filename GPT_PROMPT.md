@@ -153,15 +153,23 @@ Create FTS5 table `documents_fts` with columns: doc_id, full_text, name, author
 ### Reports (Admin Only)
 - `GET /api/reports/activities?activity_type=X&limit=100`
   - Returns list of ActivityResponse objects
+  - Filters out activities with zero space saved
+  - Includes 'delete_duplicates' activity type
+  - 60-second timeout
   - Handles empty results and None values gracefully
 - `GET /api/reports/space-saved?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
   - Returns dict with total_space_saved_bytes, total_operations, breakdown
+  - 60-second timeout
   - Handles None results when no activities match filter
 - `GET /api/reports/operations?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
   - Returns dict with activity_type as keys
+  - 60-second timeout
   - Handles None values in aggregate results
-- `GET /api/reports/corrupted-pdfs?drive=D`
-  - Returns list of corrupted PDF documents
+- `GET /api/reports/corrupted-pdfs?drive=D&limit=1000`
+  - Checks database and file existence only (fast, no PDF opening)
+  - Returns PDFs that don't exist on disk or have size 0
+  - 60-second timeout
+  - Query params: `drive` (optional), `limit` (1-5000, default 1000)
 
 ### Web Pages
 - `GET /` - Redirect to /login
