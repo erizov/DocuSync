@@ -226,11 +226,16 @@ Create FTS5 table `documents_fts` with columns: doc_id, full_text, name, author
 - "Logged in as" display
 
 ### Reports Page (`/reports`)
+- Fully translated interface (uses language from localStorage)
+- No language selector (managed from main sync page)
 - Tabbed interface: Activities, Space Saved, Operations, Corrupted PDFs
+- All buttons, labels, and text translated
 - Filters: date ranges, activity types, drive filters
 - Statistics cards
 - Data tables
 - Admin-only access check
+- 60-second timeout for all report endpoints
+- Optimized corrupted PDFs report (checks database only)
 
 ### User Management Modal
 - User list table
