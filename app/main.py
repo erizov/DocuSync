@@ -2647,7 +2647,31 @@ async def sync_page():
                     language: 'Language:',
                     numberOfFilesInBiggerFolder: 'Number of Files in bigger folder',
                     spaceNeededToSync: 'Space needed to sync',
-                    duplicates: 'Duplicates'
+                    duplicates: 'Duplicates',
+                    foldersIdentical: 'Folder {0} and {1} are identical. Files of types: {2}',
+                    folderHasLessFiles: 'Folder {0} has less files than {1}.',
+                    noDifferencesFound: 'No differences found in {0}. All files match or folder is empty.',
+                    analysisComplete: 'Analysis complete: {0} files only in {1}, {2} files only in {3}, {4} duplicates',
+                    analysisCompleteSimple: 'Analysis complete',
+                    analysisFailed: 'Analysis failed: {0}',
+                    notAuthenticated: 'Not authenticated. Please login again.',
+                    pleaseEnterBothFolders: 'Please enter both folders',
+                    analyzing: 'Analyzing...',
+                    sessionExpired: 'Session expired. Please login again.',
+                    error: 'Error: {0}',
+                    successfullyEliminated: 'Successfully eliminated {0} duplicate file(s). Kept {1} latest file(s).',
+                    successfullyEliminatedFolder: 'Successfully eliminated {0} duplicate file(s) in {1}. Freed up {2}.',
+                    confirmEliminate: 'Are you sure you want to eliminate {0} duplicate(s) and keep only the latest file? This action cannot be undone.',
+                    confirmEliminateFolder: 'Are you sure you want to eliminate {0} duplicate file(s) in {1} and free up {2}? This action cannot be undone.',
+                    eliminateDuplicates: 'Eliminate duplicates and keep only the latest file',
+                    eliminateDuplicatesFolder: 'Eliminate {0} duplicate file{1} in {2} and free up {3} KB on disk {4}',
+                    processing: 'Processing...',
+                    refreshingAnalysis: 'Refreshing analysis...',
+                    filesOnlyIn: 'Files only in {0} (showing {1} of {2}):',
+                    filesOnlyInSimple: 'Files only in {0} ({1}):',
+                    andMoreFiles: '... and {0} more files',
+                    someFilesCouldNotBeDeleted: 'Some files could not be deleted:\\n\\n{0}',
+                    failedToEliminate: 'Failed to eliminate duplicates'
                 },
                 de: {
                     title: 'DocuSync - Ordner-Synchronisation',
@@ -2664,7 +2688,31 @@ async def sync_page():
                     language: 'Sprache:',
                     numberOfFilesInBiggerFolder: 'Anzahl der Dateien im größeren Ordner',
                     spaceNeededToSync: 'Benötigter Speicherplatz für Synchronisation',
-                    duplicates: 'Duplikate'
+                    duplicates: 'Duplikate',
+                    foldersIdentical: 'Ordner {0} und {1} sind identisch. Dateitypen: {2}',
+                    folderHasLessFiles: 'Ordner {0} hat weniger Dateien als {1}.',
+                    noDifferencesFound: 'Keine Unterschiede in {0} gefunden. Alle Dateien stimmen überein oder der Ordner ist leer.',
+                    analysisComplete: 'Analyse abgeschlossen: {0} Dateien nur in {1}, {2} Dateien nur in {3}, {4} Duplikate',
+                    analysisCompleteSimple: 'Analyse abgeschlossen',
+                    analysisFailed: 'Analyse fehlgeschlagen: {0}',
+                    notAuthenticated: 'Nicht authentifiziert. Bitte erneut anmelden.',
+                    pleaseEnterBothFolders: 'Bitte beide Ordner eingeben',
+                    analyzing: 'Analysiere...',
+                    sessionExpired: 'Sitzung abgelaufen. Bitte erneut anmelden.',
+                    error: 'Fehler: {0}',
+                    successfullyEliminated: 'Erfolgreich {0} doppelte Datei(en) entfernt. {1} neueste Datei(en) behalten.',
+                    successfullyEliminatedFolder: 'Erfolgreich {0} doppelte Datei(en) in {1} entfernt. {2} freigegeben.',
+                    confirmEliminate: 'Sind Sie sicher, dass Sie {0} Duplikat(e) entfernen und nur die neueste Datei behalten möchten? Diese Aktion kann nicht rückgängig gemacht werden.',
+                    confirmEliminateFolder: 'Sind Sie sicher, dass Sie {0} doppelte Datei(en) in {1} entfernen und {2} freigeben möchten? Diese Aktion kann nicht rückgängig gemacht werden.',
+                    eliminateDuplicates: 'Duplikate entfernen und nur die neueste Datei behalten',
+                    eliminateDuplicatesFolder: 'Entferne {0} doppelte Datei{1} in {2} und gebe {3} KB auf Laufwerk {4} frei',
+                    processing: 'Verarbeite...',
+                    refreshingAnalysis: 'Aktualisiere Analyse...',
+                    filesOnlyIn: 'Dateien nur in {0} (zeige {1} von {2}):',
+                    filesOnlyInSimple: 'Dateien nur in {0} ({1}):',
+                    andMoreFiles: '... und {0} weitere Dateien',
+                    someFilesCouldNotBeDeleted: 'Einige Dateien konnten nicht gelöscht werden:\\n\\n{0}',
+                    failedToEliminate: 'Duplikate entfernen fehlgeschlagen'
                 },
                 fr: {
                     title: 'DocuSync - Synchronisation de dossiers',
@@ -2681,7 +2729,31 @@ async def sync_page():
                     language: 'Langue:',
                     numberOfFilesInBiggerFolder: 'Nombre de fichiers dans le dossier le plus grand',
                     spaceNeededToSync: 'Espace nécessaire pour la synchronisation',
-                    duplicates: 'Doublons'
+                    duplicates: 'Doublons',
+                    foldersIdentical: 'Les dossiers {0} et {1} sont identiques. Types de fichiers: {2}',
+                    folderHasLessFiles: 'Le dossier {0} a moins de fichiers que {1}.',
+                    noDifferencesFound: 'Aucune différence trouvée dans {0}. Tous les fichiers correspondent ou le dossier est vide.',
+                    analysisComplete: 'Analyse terminée: {0} fichiers uniquement dans {1}, {2} fichiers uniquement dans {3}, {4} doublons',
+                    analysisCompleteSimple: 'Analyse terminée',
+                    analysisFailed: 'Analyse échouée: {0}',
+                    notAuthenticated: 'Non authentifié. Veuillez vous reconnecter.',
+                    pleaseEnterBothFolders: 'Veuillez entrer les deux dossiers',
+                    analyzing: 'Analyse en cours...',
+                    sessionExpired: 'Session expirée. Veuillez vous reconnecter.',
+                    error: 'Erreur: {0}',
+                    successfullyEliminated: 'Suppression réussie de {0} fichier(s) en double. {1} fichier(s) le(s) plus récent(s) conservé(s).',
+                    successfullyEliminatedFolder: 'Suppression réussie de {0} fichier(s) en double dans {1}. {2} libéré(s).',
+                    confirmEliminate: 'Êtes-vous sûr de vouloir supprimer {0} doublon(s) et ne garder que le fichier le plus récent? Cette action ne peut pas être annulée.',
+                    confirmEliminateFolder: 'Êtes-vous sûr de vouloir supprimer {0} fichier(s) en double dans {1} et libérer {2}? Cette action ne peut pas être annulée.',
+                    eliminateDuplicates: 'Supprimer les doublons et ne garder que le fichier le plus récent',
+                    eliminateDuplicatesFolder: 'Supprimer {0} fichier(s) en double dans {1} et libérer {2} Ko sur le disque {3}',
+                    processing: 'Traitement en cours...',
+                    refreshingAnalysis: 'Actualisation de l\'analyse...',
+                    filesOnlyIn: 'Fichiers uniquement dans {0} (affichage de {1} sur {2}):',
+                    filesOnlyInSimple: 'Fichiers uniquement dans {0} ({1}):',
+                    andMoreFiles: '... et {0} autres fichiers',
+                    someFilesCouldNotBeDeleted: 'Certains fichiers n\'ont pas pu être supprimés:\\n\\n{0}',
+                    failedToEliminate: 'Échec de la suppression des doublons'
                 },
                 es: {
                     title: 'DocuSync - Sincronización de carpetas',
@@ -2698,7 +2770,31 @@ async def sync_page():
                     language: 'Idioma:',
                     numberOfFilesInBiggerFolder: 'Número de archivos en la carpeta más grande',
                     spaceNeededToSync: 'Espacio necesario para sincronizar',
-                    duplicates: 'Duplicados'
+                    duplicates: 'Duplicados',
+                    foldersIdentical: 'Las carpetas {0} y {1} son idénticas. Tipos de archivos: {2}',
+                    folderHasLessFiles: 'La carpeta {0} tiene menos archivos que {1}.',
+                    noDifferencesFound: 'No se encontraron diferencias en {0}. Todos los archivos coinciden o la carpeta está vacía.',
+                    analysisComplete: 'Análisis completo: {0} archivos solo en {1}, {2} archivos solo en {3}, {4} duplicados',
+                    analysisCompleteSimple: 'Análisis completo',
+                    analysisFailed: 'Análisis fallido: {0}',
+                    notAuthenticated: 'No autenticado. Por favor, inicie sesión nuevamente.',
+                    pleaseEnterBothFolders: 'Por favor, ingrese ambas carpetas',
+                    analyzing: 'Analizando...',
+                    sessionExpired: 'Sesión expirada. Por favor, inicie sesión nuevamente.',
+                    error: 'Error: {0}',
+                    successfullyEliminated: 'Eliminados exitosamente {0} archivo(s) duplicado(s). Se mantuvieron {1} archivo(s) más reciente(s).',
+                    successfullyEliminatedFolder: 'Eliminados exitosamente {0} archivo(s) duplicado(s) en {1}. Se liberaron {2}.',
+                    confirmEliminate: '¿Está seguro de que desea eliminar {0} duplicado(s) y mantener solo el archivo más reciente? Esta acción no se puede deshacer.',
+                    confirmEliminateFolder: '¿Está seguro de que desea eliminar {0} archivo(s) duplicado(s) en {1} y liberar {2}? Esta acción no se puede deshacer.',
+                    eliminateDuplicates: 'Eliminar duplicados y mantener solo el archivo más reciente',
+                    eliminateDuplicatesFolder: 'Eliminar {0} archivo(s) duplicado(s) en {1} y liberar {2} KB en el disco {3}',
+                    processing: 'Procesando...',
+                    refreshingAnalysis: 'Actualizando análisis...',
+                    filesOnlyIn: 'Archivos solo en {0} (mostrando {1} de {2}):',
+                    filesOnlyInSimple: 'Archivos solo en {0} ({1}):',
+                    andMoreFiles: '... y {0} archivos más',
+                    someFilesCouldNotBeDeleted: 'Algunos archivos no pudieron ser eliminados:\\n\\n{0}',
+                    failedToEliminate: 'Error al eliminar duplicados'
                 },
                 it: {
                     title: 'DocuSync - Sincronizzazione cartelle',
@@ -2715,7 +2811,31 @@ async def sync_page():
                     language: 'Lingua:',
                     numberOfFilesInBiggerFolder: 'Numero di file nella cartella più grande',
                     spaceNeededToSync: 'Spazio necessario per sincronizzare',
-                    duplicates: 'Duplicati'
+                    duplicates: 'Duplicati',
+                    foldersIdentical: 'Le cartelle {0} e {1} sono identiche. Tipi di file: {2}',
+                    folderHasLessFiles: 'La cartella {0} ha meno file di {1}.',
+                    noDifferencesFound: 'Nessuna differenza trovata in {0}. Tutti i file corrispondono o la cartella è vuota.',
+                    analysisComplete: 'Analisi completata: {0} file solo in {1}, {2} file solo in {3}, {4} duplicati',
+                    analysisCompleteSimple: 'Analisi completata',
+                    analysisFailed: 'Analisi fallita: {0}',
+                    notAuthenticated: 'Non autenticato. Effettuare nuovamente l\'accesso.',
+                    pleaseEnterBothFolders: 'Inserire entrambe le cartelle',
+                    analyzing: 'Analisi in corso...',
+                    sessionExpired: 'Sessione scaduta. Effettuare nuovamente l\'accesso.',
+                    error: 'Errore: {0}',
+                    successfullyEliminated: 'Eliminati con successo {0} file duplicato(i). Mantenuti {1} file più recente(i).',
+                    successfullyEliminatedFolder: 'Eliminati con successo {0} file duplicato(i) in {1}. Liberati {2}.',
+                    confirmEliminate: 'Sei sicuro di voler eliminare {0} duplicato(i) e mantenere solo il file più recente? Questa azione non può essere annullata.',
+                    confirmEliminateFolder: 'Sei sicuro di voler eliminare {0} file duplicato(i) in {1} e liberare {2}? Questa azione non può essere annullata.',
+                    eliminateDuplicates: 'Elimina duplicati e mantieni solo il file più recente',
+                    eliminateDuplicatesFolder: 'Elimina {0} file duplicato(i) in {1} e libera {2} KB sul disco {3}',
+                    processing: 'Elaborazione in corso...',
+                    refreshingAnalysis: 'Aggiornamento analisi...',
+                    filesOnlyIn: 'File solo in {0} (mostra {1} di {2}):',
+                    filesOnlyInSimple: 'File solo in {0} ({1}):',
+                    andMoreFiles: '... e {0} altri file',
+                    someFilesCouldNotBeDeleted: 'Alcuni file non sono stati eliminati:\\n\\n{0}',
+                    failedToEliminate: 'Eliminazione duplicati fallita'
                 },
                 ru: {
                     title: 'DocuSync - Синхронизация папок',
@@ -2732,9 +2852,44 @@ async def sync_page():
                     language: 'Язык:',
                     numberOfFilesInBiggerFolder: 'Количество файлов в большей папке',
                     spaceNeededToSync: 'Необходимое место для синхронизации',
-                    duplicates: 'Дубликаты'
+                    duplicates: 'Дубликаты',
+                    foldersIdentical: 'Папки {0} и {1} идентичны. Типы файлов: {2}',
+                    folderHasLessFiles: 'В папке {0} меньше файлов, чем в {1}.',
+                    noDifferencesFound: 'Различий в {0} не найдено. Все файлы совпадают или папка пуста.',
+                    analysisComplete: 'Анализ завершен: {0} файлов только в {1}, {2} файлов только в {3}, {4} дубликатов',
+                    analysisCompleteSimple: 'Анализ завершен',
+                    analysisFailed: 'Анализ не удался: {0}',
+                    notAuthenticated: 'Не авторизован. Пожалуйста, войдите снова.',
+                    pleaseEnterBothFolders: 'Пожалуйста, введите обе папки',
+                    analyzing: 'Анализ...',
+                    sessionExpired: 'Сессия истекла. Пожалуйста, войдите снова.',
+                    error: 'Ошибка: {0}',
+                    successfullyEliminated: 'Успешно удалено {0} дубликат(ов) файла(ов). Сохранено {1} последних файл(ов).',
+                    successfullyEliminatedFolder: 'Успешно удалено {0} дубликат(ов) файла(ов) в {1}. Освобождено {2}.',
+                    confirmEliminate: 'Вы уверены, что хотите удалить {0} дубликат(ов) и оставить только последний файл? Это действие нельзя отменить.',
+                    confirmEliminateFolder: 'Вы уверены, что хотите удалить {0} дубликат(ов) файла(ов) в {1} и освободить {2}? Это действие нельзя отменить.',
+                    eliminateDuplicates: 'Удалить дубликаты и оставить только последний файл',
+                    eliminateDuplicatesFolder: 'Удалить {0} дубликат(ов) файла(ов) в {1} и освободить {2} КБ на диске {3}',
+                    processing: 'Обработка...',
+                    refreshingAnalysis: 'Обновление анализа...',
+                    filesOnlyIn: 'Файлы только в {0} (показано {1} из {2}):',
+                    filesOnlyInSimple: 'Файлы только в {0} ({1}):',
+                    andMoreFiles: '... и еще {0} файлов',
+                    someFilesCouldNotBeDeleted: 'Некоторые файлы не удалось удалить:\\n\\n{0}',
+                    failedToEliminate: 'Не удалось удалить дубликаты'
                 }
             };
+            
+            // Helper function to format translated messages with placeholders
+            function formatMessage(key, ...args) {
+                const t = translations[currentLanguage] || translations.en;
+                let message = t[key] || key;
+                // Replace placeholders {0}, {1}, {2}, etc. with arguments
+                args.forEach((arg, index) => {
+                    message = message.replace(`{${index}}`, arg);
+                });
+                return message;
+            }
             
             // Detect user's language from browser
             function detectUserLanguage() {
@@ -3594,11 +3749,11 @@ async def sync_page():
                 const folder2 = document.getElementById('folder2').value;
                 
                 if (!folder1 || !folder2) {
-                    showMessage('Please enter both folders', 'error');
+                    showMessage(formatMessage('pleaseEnterBothFolders'), 'error');
                     return;
                 }
                 
-                showMessage('Analyzing...', 'info');
+                showMessage(formatMessage('analyzing'), 'info');
                 document.getElementById('executeBtn').disabled = true;
                 
                 // Set up progress bar to show after 5 seconds
@@ -3646,7 +3801,7 @@ async def sync_page():
                                 if (r.status === 401) {
                                     console.error('[DEBUG] Authentication failed, stopping polling');
                                     if (pollId) clearInterval(pollId);
-                                    showMessage('Session expired. Please login again.', 'error');
+                                    showMessage(formatMessage('sessionExpired'), 'error');
                                 }
                                 return;
                             }
@@ -3762,19 +3917,19 @@ async def sync_page():
                             const total1 = data.analysis.missing_count_folder2 || 0;
                             const total2 = data.analysis.missing_count_folder1 || 0;
                             const dupCount = data.analysis.duplicate_count || 0;
-                            showMessage(`Analysis complete: ${total1} files only in ${folder1Path}, ${total2} files only in ${folder2Path}, ${dupCount} duplicates`, 'success');
+                            showMessage(formatMessage('analysisComplete', total1, folder1Path, total2, folder2Path, dupCount), 'success');
                         } else {
-                            showMessage('Analysis complete', 'success');
+                            showMessage(formatMessage('analysisCompleteSimple'), 'success');
                         }
                     } else {
                         if (response.status === 401) {
-                            showMessage('Session expired. Please login again.', 'error');
+                            showMessage(formatMessage('sessionExpired'), 'error');
                             localStorage.removeItem('access_token');
                             setTimeout(() => {
                                 window.location.href = '/login';
                             }, 2000);
                         } else {
-                            showMessage('Analysis failed: ' + (data.detail || 'Unknown error'), 'error');
+                            showMessage(formatMessage('analysisFailed', data.detail || 'Unknown error'), 'error');
                         }
                     }
                 } catch (error) {
@@ -3783,7 +3938,7 @@ async def sync_page():
                         clearTimeout(progressTimeout);
                     }
                     hideProgress();
-                    showMessage('Error: ' + error.message, 'error');
+                    showMessage(formatMessage('error', error.message), 'error');
                 } finally {
                     document.getElementById('executeBtn').disabled = false;
                 }
@@ -3925,14 +4080,14 @@ async def sync_page():
                         btn1.onclick = async () => {
                             const token = localStorage.getItem('access_token');
                             if (!token) {
-                                showMessage('Not authenticated. Please login again.', 'error');
+                                showMessage(formatMessage('notAuthenticated'), 'error');
                                 window.location.href = '/login';
                                 return;
                             }
                             
-                            if (confirm(`Are you sure you want to eliminate ${folder1Duplicates} duplicate file(s) in Folder1 and free up ${formatBytes(folder1SpaceToFree)}? This action cannot be undone.`)) {
+                            if (confirm(formatMessage('confirmEliminateFolder', folder1Duplicates, 'Folder1', formatBytes(folder1SpaceToFree)))) {
                                 btn1.disabled = true;
-                                btn1.textContent = 'Processing...';
+                                btn1.textContent = formatMessage('processing');
                                 try {
                                     const response = await fetch('/api/sync/eliminate-duplicates-folder', {
                                         method: 'POST',
@@ -3956,7 +4111,7 @@ async def sync_page():
                                             alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
                                         }
                                         
-                                        showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder1. Freed up ${formatBytes(result.space_freed)}.`, 'success');
+                                        showMessage(formatMessage('successfullyEliminatedFolder', result.deleted_count, 'Folder1', formatBytes(result.space_freed)), 'success');
                                         setTimeout(() => {
                                             const analyzeBtn = document.getElementById('analyzeBtn');
                                             if (analyzeBtn) {
@@ -3967,15 +4122,15 @@ async def sync_page():
                                         }, 1000);
                                     } else {
                                         // Show popup with error message
-                                        const errorMsg = result.error || 'Failed to eliminate duplicates';
-                                        alert(`Error: ${errorMsg}`);
-                                        showMessage(`Error: ${errorMsg}`, 'error');
+                                        const errorMsg = result.error || formatMessage('failedToEliminate');
+                                        alert(formatMessage('error', errorMsg));
+                                        showMessage(formatMessage('error', errorMsg), 'error');
                                         btn1.disabled = false;
                                         const spaceKB1 = Math.round(folder1SpaceToFree / 1024);
                                         btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${spaceKB1.toLocaleString()} KB on disk ${drive1 ? drive1 + '\\\\' : ''}`;
                                     }
                                 } catch (error) {
-                                    showMessage(`Error: ${error.message}`, 'error');
+                                    showMessage(formatMessage('error', error.message), 'error');
                                     btn1.disabled = false;
                                     btn1.textContent = `Eliminate ${folder1Duplicates} duplicate file${folder1Duplicates > 1 ? 's' : ''} in Folder1 and free up ${formatBytes(folder1SpaceToFree)} on disk ${drive1 ? drive1 + '\\\\' : ''}`;
                                 }
@@ -4000,14 +4155,14 @@ async def sync_page():
                         btn2.onclick = async () => {
                             const token = localStorage.getItem('access_token');
                             if (!token) {
-                                showMessage('Not authenticated. Please login again.', 'error');
+                                showMessage(formatMessage('notAuthenticated'), 'error');
                                 window.location.href = '/login';
                                 return;
                             }
                             
-                            if (confirm(`Are you sure you want to eliminate ${folder2Duplicates} duplicate file(s) in Folder2 and free up ${formatBytes(folder2SpaceToFree)}? This action cannot be undone.`)) {
+                            if (confirm(formatMessage('confirmEliminateFolder', folder2Duplicates, 'Folder2', formatBytes(folder2SpaceToFree)))) {
                                 btn2.disabled = true;
-                                btn2.textContent = 'Processing...';
+                                btn2.textContent = formatMessage('processing');
                                 try {
                                     const response = await fetch('/api/sync/eliminate-duplicates-folder', {
                                         method: 'POST',
@@ -4031,7 +4186,7 @@ async def sync_page():
                                             alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
                                         }
                                         
-                                        showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s) in Folder2. Freed up ${formatBytes(result.space_freed)}.`, 'success');
+                                        showMessage(formatMessage('successfullyEliminatedFolder', result.deleted_count, 'Folder2', formatBytes(result.space_freed)), 'success');
                                         setTimeout(() => {
                                             const analyzeBtn = document.getElementById('analyzeBtn');
                                             if (analyzeBtn) {
@@ -4042,15 +4197,15 @@ async def sync_page():
                                         }, 1000);
                                     } else {
                                         // Show popup with error message
-                                        const errorMsg = result.error || 'Failed to eliminate duplicates';
-                                        alert(`Error: ${errorMsg}`);
-                                        showMessage(`Error: ${errorMsg}`, 'error');
+                                        const errorMsg = result.error || formatMessage('failedToEliminate');
+                                        alert(formatMessage('error', errorMsg));
+                                        showMessage(formatMessage('error', errorMsg), 'error');
                                         btn2.disabled = false;
                                         const spaceKB2 = Math.round(folder2SpaceToFree / 1024);
                                         btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${spaceKB2.toLocaleString()} KB on disk ${drive2 ? drive2 + '\\\\' : ''}`;
                                     }
                                 } catch (error) {
-                                    showMessage(`Error: ${error.message}`, 'error');
+                                    showMessage(formatMessage('error', error.message), 'error');
                                     btn2.disabled = false;
                                     btn2.textContent = `Eliminate ${folder2Duplicates} duplicate file${folder2Duplicates > 1 ? 's' : ''} in Folder2 and free up ${formatBytes(folder2SpaceToFree)} on disk ${drive2 ? drive2 + '\\\\' : ''}`;
                                 }
@@ -4092,10 +4247,10 @@ async def sync_page():
                         header.style.marginBottom = '10px';
                         const totalCount = a.missing_count_folder2 || a.missing_in_folder2.length;
                         const displayedCount = a.missing_in_folder2.length;
-                        if (displayedCount < totalCount) {
-                            header.textContent = `Files only in ${folder1Path} (showing ${displayedCount} of ${totalCount}):`;
+                            if (displayedCount < totalCount) {
+                            header.textContent = formatMessage('filesOnlyIn', folder1Path, displayedCount, totalCount);
                         } else {
-                            header.textContent = `Files only in ${folder1Path} (${totalCount}):`;
+                            header.textContent = formatMessage('filesOnlyInSimple', folder1Path, totalCount);
                         }
                         panel1.appendChild(header);
                         
@@ -4200,7 +4355,7 @@ async def sync_page():
                             
                             // Add button to eliminate duplicates
                             const eliminateBtn = document.createElement('button');
-                            eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                            eliminateBtn.textContent = formatMessage('eliminateDuplicates');
                             eliminateBtn.style.marginBottom = '15px';
                             eliminateBtn.style.padding = '8px 16px';
                             eliminateBtn.style.backgroundColor = '#dc3545';
@@ -4216,14 +4371,14 @@ async def sync_page():
                                 const f2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
                                 
                                 if (!token) {
-                                    showMessage('Not authenticated. Please login again.', 'error');
+                                    showMessage(formatMessage('notAuthenticated'), 'error');
                                     window.location.href = '/login';
                                     return;
                                 }
                                 
-                                if (confirm(`Are you sure you want to eliminate ${duplicatesPanel1.length} duplicate(s) and keep only the latest file? This action cannot be undone.`)) {
+                                if (confirm(formatMessage('confirmEliminate', duplicatesPanel1.length))) {
                                     eliminateBtn.disabled = true;
-                                    eliminateBtn.textContent = 'Processing...';
+                                    eliminateBtn.textContent = formatMessage('processing');
                                     try {
                                         const response = await fetch('/api/sync/eliminate-duplicates', {
                                             method: 'POST',
@@ -4243,19 +4398,19 @@ async def sync_page():
                                             if (result.errors && result.errors.length > 0) {
                                                 // Show popup with specific error reasons
                                                 const errorMessages = result.errors.join('\\n');
-                                                alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                                alert(formatMessage('someFilesCouldNotBeDeleted', errorMessages));
                                             }
                                             
-                                            showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
+                                            showMessage(formatMessage('successfullyEliminated', result.deleted_count, result.kept_count), 'success');
                                             // Clear panel1 immediately to show that refresh is happening
                                             const panel1 = document.getElementById('panel1');
                                             if (panel1) {
-                                                panel1.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                                panel1.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">${formatMessage('refreshingAnalysis')}</div>`;
                                             }
                                             // Also clear panel2 for consistency
                                             const panel2 = document.getElementById('panel2');
                                             if (panel2) {
-                                                panel2.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">Refreshing analysis...</div>';
+                                                panel2.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">${formatMessage('refreshingAnalysis')}</div>`;
                                             }
                                             // Reload analysis to refresh display
                                             setTimeout(() => {
@@ -4272,12 +4427,12 @@ async def sync_page():
                                             alert(`Error: ${errorMsg}`);
                                             showMessage(`Error: ${errorMsg}`, 'error');
                                             eliminateBtn.disabled = false;
-                                            eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                                            eliminateBtn.textContent = formatMessage('eliminateDuplicates');
                                         }
                                     } catch (error) {
-                                        showMessage(`Error: ${error.message}`, 'error');
+                                        showMessage(formatMessage('error', error.message), 'error');
                                         eliminateBtn.disabled = false;
-                                        eliminateBtn.textContent = 'Eliminate duplicates and keep only the latest file';
+                                        eliminateBtn.textContent = formatMessage('eliminateDuplicates');
                                     }
                                 }
                             };
@@ -4364,7 +4519,7 @@ async def sync_page():
                         message.style.textAlign = 'center';
                         message.style.color = '#28a745';
                         message.style.fontWeight = '500';
-                        message.textContent = `Folder ${folder1Path} and ${folder2Path} are identical. Files of types: ${typesList}`;
+                        message.textContent = formatMessage('foldersIdentical', folder1Path, folder2Path, typesList);
                         panel1.appendChild(message);
                     } else if (!hasContent) {
                         // Panel 1 has no content but folders are not identical
@@ -4376,14 +4531,14 @@ async def sync_page():
                             message.style.padding = '20px';
                             message.style.textAlign = 'center';
                             message.style.color = '#666';
-                            message.textContent = `Folder ${folder1Path} has less files than ${folder2Path}.`;
+                            message.textContent = formatMessage('folderHasLessFiles', folder1Path, folder2Path);
                             panel1.appendChild(message);
                         } else {
                             const message = document.createElement('div');
                             message.style.padding = '20px';
                             message.style.textAlign = 'center';
                             message.style.color = '#666';
-                            message.textContent = `No differences found in ${folder1Path}. All files match or folder is empty.`;
+                            message.textContent = formatMessage('noDifferencesFound', folder1Path);
                             panel1.appendChild(message);
                         }
                     }
@@ -4524,7 +4679,7 @@ async def sync_page():
                                 const f2Path = normalizeFolderPath(a.folder2) || 'Folder 2';
                                 
                                 if (!token) {
-                                    showMessage('Not authenticated. Please login again.', 'error');
+                                    showMessage(formatMessage('notAuthenticated'), 'error');
                                     window.location.href = '/login';
                                     return;
                                 }
@@ -4551,7 +4706,7 @@ async def sync_page():
                                             if (result.errors && result.errors.length > 0) {
                                                 // Show popup with specific error reasons
                                                 const errorMessages = result.errors.join('\\n');
-                                                alert(`Some files could not be deleted:\\n\\n${errorMessages}`);
+                                                alert(formatMessage('someFilesCouldNotBeDeleted', errorMessages));
                                             }
                                             
                                             showMessage(`Successfully eliminated ${result.deleted_count} duplicate file(s). Kept ${result.kept_count} latest file(s).`, 'success');
@@ -4583,7 +4738,7 @@ async def sync_page():
                                             eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
                                         }
                                     } catch (error) {
-                                        showMessage(`Error: ${error.message}`, 'error');
+                                        showMessage(formatMessage('error', error.message), 'error');
                                         eliminateBtn2.disabled = false;
                                         eliminateBtn2.textContent = 'Eliminate duplicates and keep only the latest file';
                                     }
@@ -4660,7 +4815,7 @@ async def sync_page():
                         message.style.textAlign = 'center';
                         message.style.color = '#28a745';
                         message.style.fontWeight = '500';
-                        message.textContent = `Folder ${folder1Path} and ${folder2Path} are identical. Files of types: ${typesList}`;
+                        message.textContent = formatMessage('foldersIdentical', folder1Path, folder2Path, typesList);
                         panel2.appendChild(message);
                     } else if (!hasContent) {
                         // Panel 2 has no content but folders are not identical
@@ -4672,14 +4827,14 @@ async def sync_page():
                             message.style.padding = '20px';
                             message.style.textAlign = 'center';
                             message.style.color = '#666';
-                            message.textContent = `Folder ${folder2Path} has less files than ${folder1Path}.`;
+                            message.textContent = formatMessage('folderHasLessFiles', folder2Path, folder1Path);
                             panel2.appendChild(message);
                         } else {
                             const message = document.createElement('div');
                             message.style.padding = '20px';
                             message.style.textAlign = 'center';
                             message.style.color = '#666';
-                            message.textContent = `No differences found in ${folder2Path}. All files match or folder is empty.`;
+                            message.textContent = formatMessage('noDifferencesFound', folder2Path);
                             panel2.appendChild(message);
                         }
                     }
