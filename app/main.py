@@ -4267,7 +4267,7 @@ async def sync_page():
                             moreIndicator.style.color = '#666';
                             moreIndicator.style.fontStyle = 'italic';
                             moreIndicator.style.borderTop = '1px solid #eee';
-                            moreIndicator.textContent = `... and ${totalCount - displayedCount} more files`;
+                            moreIndicator.textContent = formatMessage('andMoreFiles', totalCount - displayedCount);
                             panel1.appendChild(moreIndicator);
                         }
                     }
@@ -4574,7 +4574,7 @@ async def sync_page():
                             moreIndicator.style.color = '#666';
                             moreIndicator.style.fontStyle = 'italic';
                             moreIndicator.style.borderTop = '1px solid #eee';
-                            moreIndicator.textContent = `... and ${totalCount - displayedCount} more files`;
+                            moreIndicator.textContent = formatMessage('andMoreFiles', totalCount - displayedCount);
                             panel2.appendChild(moreIndicator);
                         }
                     }
