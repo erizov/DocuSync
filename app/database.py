@@ -113,12 +113,15 @@ def migrate_add_role_column(db_engine=None) -> None:
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'readonly'"
             ))
-            # Update existing users to admin role (for backward compatibility)
-            conn.execute(text(
-                "UPDATE users SET role = 'admin' WHERE role IS NULL OR role = ''"
-            ))
             conn.commit()
             print("Added 'role' column to users table")
+        
+        # Update existing users to admin role (for backward compatibility)
+        # This ensures existing users get admin privileges
+        conn.execute(text(
+            "UPDATE users SET role = 'admin' WHERE role = 'readonly' OR role IS NULL OR role = ''"
+        ))
+        conn.commit()
     except Exception as e:
         print(f"Warning: Could not migrate users table: {e}")
         conn.rollback()
