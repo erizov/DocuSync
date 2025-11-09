@@ -457,7 +457,7 @@ This project is open source and available under the MIT License.
 
 ## Author
 
-Developed with simplicity and robustness in mind.
+Eugene Rizov & Cursor. Developed with simplicity and robustness in mind.
 
 ## Documentation
 
