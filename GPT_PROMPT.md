@@ -67,6 +67,10 @@ DocSync/
 ├── requirements.txt
 ├── pyproject.toml
 ├── README.md
+├── PROJECT_DESCRIPTION_RU.md # Russian project description with screens
+├── ENDPOINTS_GUIDE.md      # API endpoints guide
+├── GPT_PROMPT.md          # Project generation prompt (this file)
+├── TECHNICAL_SPECIFICATION.md # Technical specification
 └── LICENSE
 ```
 
@@ -132,17 +136,24 @@ Create FTS5 table `documents_fts` with columns: doc_id, full_text, name, author
 
 ### Documents
 - `GET /api/documents?drive=D` - List documents (optional drive filter)
-- `GET /api/search?q=query` - Search documents
+- `GET /api/search?q=query` - Search documents (supports FTS5)
+- `GET /api/search/phrase?q=phrase` - Phrase search using FTS5
+- `GET /api/search/boolean?q=query` - Boolean search using FTS5 (AND, OR, NOT)
 - `GET /api/stats` - Statistics
 
 ### Duplicates
 - `GET /api/duplicates?duplicate_type=content|name|all` - Find duplicates
 
 ### Sync
-- `POST /api/sync/analyze` - Body: {folder1, folder2, strategy}
-- `POST /api/sync/execute` - Body: {folder1, folder2, files_to_copy[]}
-- `GET /api/sync/progress?job_id=xxx` - Get progress
-- `POST /api/sync/delete-file` - Body: {file_path}
+- `POST /api/sync/analyze` - Body: {folder1, folder2, drive1, drive2, job_id?}
+  - Analyzes sync requirements between two folders/drives
+  - Returns analysis with missing files, duplicates, and conflicts
+  - Supports progress tracking via job_id
+- `POST /api/sync/execute` - Body: {folder1, folder2, strategy, files_to_copy[], dry_run?}
+  - Executes synchronization with selected strategy
+  - Strategies: keep_both, keep_newest, keep_largest
+- `GET /api/sync/progress?job_id=xxx` - Get sync analysis progress
+- `POST /api/sync/delete-file` - Body: {file_path} - Delete file (admin only)
 
 ### User Management (Admin Only)
 - `GET /api/users` - List users
@@ -425,7 +436,7 @@ aiofiles==23.2.1
 4. **Performance**: Use indexes, optimize queries, async where appropriate
 5. **UI/UX**: Responsive design, clear error messages, loading states
 6. **Testing**: Write tests for all major functionality
-7. **Documentation**: Include README with setup instructions
+7. **Documentation**: Include README with setup instructions, PROJECT_DESCRIPTION_RU.md for Russian documentation
 
 ---
 
@@ -507,9 +518,22 @@ aiofiles==23.2.1
 - [ ] CLI commands implemented
 - [ ] Tests written
 - [ ] Error handling comprehensive
-- [ ] Documentation complete
+- [ ] Documentation complete (README.md, PROJECT_DESCRIPTION_RU.md, ENDPOINTS_GUIDE.md)
 
 ---
 
-**Generate the complete project now, ensuring all features are implemented and the system is fully functional.**
+## Current Project State
+
+The project is fully implemented and includes:
+- ✅ All database models (Document, User, Activity)
+- ✅ All API endpoints with proper authentication
+- ✅ Web-based UI (sync interface, reports page, login page)
+- ✅ Multi-language support (6 languages)
+- ✅ User management interface
+- ✅ Reports interface (Activities, Space Saved, Operations, Corrupted PDFs)
+- ✅ CLI commands for all operations
+- ✅ Comprehensive test suite
+- ✅ Documentation files (README.md, PROJECT_DESCRIPTION_RU.md, ENDPOINTS_GUIDE.md, TECHNICAL_SPECIFICATION.md)
+
+**The project is production-ready and fully functional.**
 

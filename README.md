@@ -357,7 +357,11 @@ DocSync/
 │   └── ...
 ├── requirements.txt         # Python dependencies
 ├── pyproject.toml          # Project configuration
-└── README.md               # This file
+├── README.md               # This file
+├── PROJECT_DESCRIPTION_RU.md # Russian project description with screens
+├── ENDPOINTS_GUIDE.md      # API endpoints guide
+├── GPT_PROMPT.md          # Project generation prompt
+└── TECHNICAL_SPECIFICATION.md # Technical specification
 ```
 
 ## Database Schema
@@ -454,6 +458,14 @@ This project is open source and available under the MIT License.
 ## Author
 
 Developed with simplicity and robustness in mind.
+
+## Documentation
+
+Additional documentation files:
+- **PROJECT_DESCRIPTION_RU.md**: Complete project description and screen layouts in Russian
+- **ENDPOINTS_GUIDE.md**: Detailed guide for API endpoints and frontend pages
+- **GPT_PROMPT.md**: Complete project generation prompt for AI assistants
+- **TECHNICAL_SPECIFICATION.md**: Technical specification document
 
 ## Support
 
