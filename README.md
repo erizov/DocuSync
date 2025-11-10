@@ -647,6 +647,8 @@ Additional documentation files:
 - **ENDPOINTS_GUIDE.md**: Detailed guide for API endpoints and frontend pages
 - **GPT_PROMPT.md**: Complete project generation prompt for AI assistants
 - **TECHNICAL_SPECIFICATION.md**: Technical specification document
+- **FOLDER_PATH_GUIDE.md**: Guide for obtaining correct folder paths in browser
+- **ELECTRON_FOLDER_PICKER.md**: Example implementation for Electron desktop app to get absolute paths
 
 ## Support
 
