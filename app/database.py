@@ -88,10 +88,27 @@ class Activity(Base):
     )
 
 
+# Build database URL from components if provided, otherwise use database_url
+def get_database_url() -> str:
+    """Get database URL from settings."""
+    if settings.database_url and not settings.database_url.startswith("sqlite"):
+        # Use provided database_url if it's not SQLite
+        return settings.database_url
+    elif settings.db_host:
+        # Build PostgreSQL URL from components
+        return (
+            f"postgresql://{settings.db_user}:{settings.db_password}"
+            f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
+        )
+    else:
+        # Use default SQLite URL
+        return settings.database_url
+
+
 engine = create_engine(
-    settings.database_url,
+    get_database_url(),
     connect_args={"check_same_thread": False}
-    if "sqlite" in settings.database_url else {}
+    if "sqlite" in get_database_url() else {}
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -108,15 +125,25 @@ def init_db(db_engine=None) -> None:
 def migrate_add_role_column(db_engine=None) -> None:
     """Add role column to users table if it doesn't exist."""
     db_engine = db_engine or engine
+    db_url = str(db_engine.url)
     conn = db_engine.connect()
     try:
         # Check if role column exists
-        cursor = conn.execute(text(
-            "PRAGMA table_info(users)"
-        ))
-        columns = [row[1] for row in cursor.fetchall()]
+        if "postgresql" in db_url or "postgres" in db_url:
+            # PostgreSQL
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'users' AND column_name = 'role'
+            """))
+            column_exists = result.fetchone() is not None
+        else:
+            # SQLite
+            cursor = conn.execute(text("PRAGMA table_info(users)"))
+            columns = [row[1] for row in cursor.fetchall()]
+            column_exists = 'role' in columns
         
-        if 'role' not in columns:
+        if not column_exists:
             # Add role column with default value
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'readonly'"
@@ -143,8 +170,19 @@ def migrate_add_role_column(db_engine=None) -> None:
 
 
 def init_fts5(db_engine=None) -> None:
-    """Initialize FTS5 virtual table for full-text search."""
+    """
+    Initialize FTS5 virtual table for full-text search.
+    Only works with SQLite. For PostgreSQL, use full-text search via SQLAlchemy.
+    """
     db_engine = db_engine or engine
+    db_url = str(db_engine.url)
+    
+    # FTS5 is SQLite-specific, skip for PostgreSQL
+    if "postgresql" in db_url or "postgres" in db_url:
+        print("PostgreSQL detected. FTS5 is SQLite-specific. "
+              "Use PostgreSQL full-text search instead.")
+        return
+    
     conn = db_engine.connect()
     try:
         # Create FTS5 virtual table if it doesn't exist

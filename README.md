@@ -60,7 +60,11 @@ DocuSync is a powerful yet simple document management system that helps you orga
 - **Centralized Language Control**: Language selector available only on main sync page; all other pages use the selected language automatically
 
 ### 🗄️ Database Storage
-- **SQLite Database**: Fast, local, no server required
+- **SQLite Database**: Fast, local, no server required (default)
+- **PostgreSQL Support**: Production-ready PostgreSQL support for Docker deployments
+- **Database Migrations**: Alembic for schema versioning and migrations
+- **Automatic Initialization**: Database initialization script runs only once if DB doesn't exist
+- **Scheduled Cleanup**: Configurable cleanup of old activity logs and orphaned records
 - **Indexed Queries**: Optimized indexes for quick searches
 - **Text Content Storage**: Optional storage of extracted text for faster searching
 - **Metadata Preservation**: All document information in one place
@@ -418,6 +422,134 @@ pytest --cov=app --cov-report=html
 ```
 
 **Note**: Tests are configured to limit file operations to 100 files maximum and have a 30-minute timeout (whichever comes first) for performance. File operations (move/sync) are automatically reverted after tests complete.
+
+## Docker Deployment
+
+DocuSync supports production deployment with Docker and PostgreSQL.
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- PostgreSQL database (included in docker-compose.yml)
+
+### Quick Start with Docker
+
+1. **Clone the repository:**
+```bash
+git clone https://github.com/erizov/DocuSync.git
+cd DocuSync
+```
+
+2. **Create `.env` file:**
+```bash
+cp .env.example .env
+```
+
+3. **Update `.env` with your settings:**
+```env
+# Database Configuration
+DB_HOST=db
+DB_PORT=5432
+DB_NAME=docu_sync
+DB_USER=docu_sync_user
+DB_PASSWORD=your_secure_password_here
+
+# Cleanup Schedule (cron-like format)
+CLEANUP_SCHEDULE=02:00  # Daily at 2 AM
+CLEANUP_ENABLED=true
+CLEANUP_RETENTION_DAYS=90
+
+# Security (CHANGE IN PRODUCTION!)
+SECRET_KEY=your_secret_key_here
+DEFAULT_USERNAME=admin
+DEFAULT_PASSWORD=your_secure_password_here
+```
+
+4. **Start services:**
+```bash
+docker-compose up -d
+```
+
+5. **Access the application:**
+- Web Interface: http://localhost:8000/sync
+- API Documentation: http://localhost:8000/docs
+- Login Page: http://localhost:8000/login
+
+### Docker Services
+
+The `docker-compose.yml` includes three services:
+
+1. **db**: PostgreSQL database
+   - Persistent volume for data
+   - Health checks enabled
+   - Auto-restart on failure
+
+2. **app**: FastAPI application
+   - Automatically initializes database on first run
+   - Runs Alembic migrations
+   - Exposes port 8000
+
+3. **cleanup**: Database cleanup scheduler
+   - Runs on configurable schedule (default: daily at 2 AM)
+   - Cleans up old activity logs
+   - Removes orphaned document records
+
+### Database Initialization
+
+The database initialization script (`scripts/init_db.py`) runs automatically on first startup:
+
+- Creates database if it doesn't exist (PostgreSQL)
+- Creates all tables
+- Runs Alembic migrations
+- Creates default admin user
+
+**Note**: The script checks if the database is already initialized and skips initialization if tables exist.
+
+### Database Migrations
+
+Alembic is configured for database migrations:
+
+```bash
+# Create a new migration
+docker-compose exec app alembic revision --autogenerate -m "description"
+
+# Apply migrations
+docker-compose exec app alembic upgrade head
+
+# Rollback one migration
+docker-compose exec app alembic downgrade -1
+```
+
+### Database Cleanup
+
+The cleanup service runs on a schedule defined in `.env`:
+
+- **Format**: `HH:MM` for daily (e.g., `02:00` for 2 AM)
+- **Or**: `*/N` for every N hours (e.g., `*/6` for every 6 hours)
+- **Retention**: Keeps activity logs for N days (default: 90 days)
+
+To run cleanup manually:
+```bash
+docker-compose exec cleanup python scripts/cleanup_db.py
+```
+
+Or set `RUN_ONCE=true` to run once and exit:
+```bash
+docker-compose run --rm -e RUN_ONCE=true cleanup
+```
+
+### Stopping Services
+
+```bash
+# Stop services
+docker-compose stop
+
+# Stop and remove containers
+docker-compose down
+
+# Stop and remove containers + volumes (WARNING: deletes database!)
+docker-compose down -v
+```
 
 ## Configuration
 

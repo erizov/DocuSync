@@ -17,6 +17,18 @@ class Settings(BaseSettings):
     # Database configuration
     database_url: str = "sqlite:///docu_sync.db"
     # For Docker/PostgreSQL: postgresql://user:password@db:5432/docu_sync
+    db_host: Optional[str] = None  # PostgreSQL host (e.g., db or localhost)
+    db_port: int = 5432  # PostgreSQL port
+    db_name: str = "docu_sync"  # Database name
+    db_user: str = "postgres"  # Database user
+    db_password: str = "postgres"  # Database password
+
+    # Database cleanup schedule (cron-like format)
+    # Format: "HH:MM" for daily, or "*/N" for every N hours
+    # Examples: "02:00" (daily at 2 AM), "*/6" (every 6 hours)
+    cleanup_schedule: str = "02:00"  # Default: daily at 2 AM
+    cleanup_enabled: bool = True  # Enable/disable cleanup
+    cleanup_retention_days: int = 90  # Keep activity logs for N days
 
     # Application settings
     max_file_size_mb: int = 100

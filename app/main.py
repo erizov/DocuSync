@@ -2206,6 +2206,129 @@ async def eliminate_duplicates(
         }
 
 
+class PathValidationRequest(BaseModel):
+    """Path validation request model."""
+    path: str
+
+
+@app.post("/api/sync/validate-path")
+async def validate_path(
+    request: PathValidationRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Validate and normalize a folder path.
+    Returns the normalized path with uppercase drive letter.
+    """
+    import os
+    
+    if not request.path or not request.path.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Path cannot be empty"
+        )
+    
+    path = request.path.strip()
+    
+    # Debug: log the received path
+    print(f"[DEBUG] validate_path received: {repr(path)}")
+    
+    # Try to get absolute path
+    try:
+        # Check if it's a drive letter only (e.g., "D" or "D:")
+        if len(path) == 1 and path.isalpha():
+            # Convert single letter to drive path
+            path = f"{path.upper()}:\\"
+        elif len(path) == 2 and path[1] == ':':
+            # Drive letter with colon (e.g., "D:")
+            path = f"{path[0].upper()}:\\"
+        
+        # Normalize separators first (replace forward slashes with backslashes)
+        path = path.replace('/', '\\')
+        
+        # Check if path is already absolute on Windows
+        # Windows absolute path starts with drive letter followed by colon
+        # Examples: D:\books, D:books, D:\\books
+        # IMPORTANT: On Windows, os.path.isabs() returns True for paths starting with drive letter
+        # But we need to handle paths like "D:books" (without backslash) correctly
+        is_absolute_windows_path = False
+        if len(path) >= 2 and path[1] == ':':
+            # Path starts with drive letter - it's absolute on Windows
+            is_absolute_windows_path = True
+            # If path is like "D:books" (without backslash), add it
+            if len(path) == 2:
+                path = path + '\\'
+            elif len(path) > 2 and path[2] != '\\':
+                # Path is like "D:books" - add backslash after colon
+                path = path[0:2] + '\\' + path[2:]
+        
+        if is_absolute_windows_path:
+            # This is already an absolute path on Windows
+            # Normalize double backslashes
+            abs_path = path.replace('\\\\', '\\')
+            # Ensure drive letter is uppercase
+            if abs_path[0].isalpha():
+                abs_path = abs_path[0].upper() + abs_path[1:]
+            # Normalize the path (resolve any . or .. components)
+            # Use normpath which correctly handles Windows absolute paths
+            abs_path = os.path.normpath(abs_path)
+            # Verify it's still absolute after normalization
+            if not os.path.isabs(abs_path):
+                # This shouldn't happen, but if it does, use abspath
+                abs_path = os.path.abspath(abs_path)
+        else:
+            # Relative path - convert to absolute using current working directory
+            # BUT: Check if path might be a Windows path with missing colon
+            # If path starts with single letter and backslash (e.g., "D\books"),
+            # it might be a typo - but we can't fix it automatically
+            abs_path = os.path.abspath(path)
+            # Normalize the path (resolve any . or .. components)
+            abs_path = os.path.normpath(abs_path)
+        
+        # Ensure drive letter is uppercase (Windows)
+        if len(abs_path) >= 2 and abs_path[1] == ':':
+            abs_path = abs_path[0].upper() + abs_path[1:]
+        
+        # Debug: log the normalized path
+        print(f"[DEBUG] validate_path normalized: {repr(abs_path)}")
+        print(f"[DEBUG] os.path.isabs(abs_path): {os.path.isabs(abs_path)}")
+        
+        # Check if path exists
+        if not os.path.exists(abs_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Path does not exist: {abs_path}"
+            )
+        
+        # Check if it's a directory
+        if not os.path.isdir(abs_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path is not a directory: {abs_path}"
+            )
+        
+        # Remove trailing slashes (except for drive root like "D:\")
+        if abs_path.endswith('\\') and not abs_path.endswith(':\\'):
+            abs_path = abs_path.rstrip('\\')
+        if abs_path.endswith('/') and not abs_path.endswith(':/'):
+            abs_path = abs_path.rstrip('/')
+        
+        return {
+            "success": True,
+            "normalized_path": abs_path,
+            "drive": abs_path[0] if len(abs_path) >= 1 and abs_path[1] == ':' else None,
+            "exists": True,
+            "is_directory": True
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error validating path: {str(e)}"
+        )
+
+
 @app.post("/api/sync/execute")
 async def execute_sync(
     request: SyncRequest,
@@ -4420,7 +4543,7 @@ async def sync_page():
             }
             
             // Function to handle folder selection
-            function handleFolderSelection(files, inputId) {
+            async function handleFolderSelection(files, inputId) {
                 if (!files || files.length === 0) {
                     return;
                 }
@@ -4440,23 +4563,40 @@ async def sync_page():
                 // Try to detect full path from file paths (if available)
                 // Find the common root directory (the selected folder) from all files
                 const backslash = String.fromCharCode(92);
-                let allPaths = [];
-                let commonRootPath = '';
+                let allDirPaths = [];
+                let allFilePaths = [];
                 
-                for (let i = 0; i < Math.min(files.length, 50); i++) {
+                // First pass: collect all file paths and extract directory paths
+                for (let i = 0; i < Math.min(files.length, 100); i++) {
                     const file = files[i];
                     if (file.path) {
-                        // Extract drive letter from file path (e.g., "C:\\Users\\...")
-                        const driveMatch = file.path.match(/^([A-Za-z]:)/i);
+                        // Debug: log the file path
+                        console.log('[DEBUG] file.path (first pass):', file.path);
+                        
+                        // Normalize separators first
+                        let filePath = file.path.replace(/\//g, backslash);
+                        
+                        // Extract drive letter from file path (e.g., "C:\\Users\\..." or "C:/Users/...")
+                        const driveMatch = filePath.match(/^([A-Za-z]):/i);
                         if (driveMatch) {
                             detectedDrive = driveMatch[1].toUpperCase();
-                            // Extract directory path (the full folder path)
-                            // This gives us the full path like "d:\\my\\local\\folder"
-                            const dirPath = file.path.substring(0, 
-                                Math.max(file.path.lastIndexOf(backslash), file.path.lastIndexOf('/')));
-                            if (dirPath && dirPath.includes(backslash)) {
+                            
+                            // If path is like "D:books" (without backslash), add it
+                            if (filePath.length > 2 && filePath[2] !== backslash) {
+                                filePath = filePath.substring(0, 2) + backslash + filePath.substring(2);
+                            }
+                            
+                            // Store full file path (normalized)
+                            allFilePaths.push(filePath);
+                            
+                            // Extract directory path (the full folder path containing the file)
+                            // This gives us the full path like "d:\\my\\local\\folder\\sub\\sub2"
+                            const dirPath = filePath.substring(0, 
+                                Math.max(filePath.lastIndexOf(backslash), filePath.lastIndexOf('/')));
+                            if (dirPath && dirPath.length >= 3) {
                                 // Add the full directory path
-                                allPaths.push(dirPath);
+                                allDirPaths.push(dirPath);
+                                console.log('[DEBUG] extracted dirPath (first pass):', dirPath);
                             }
                         }
                     }
@@ -4464,11 +4604,11 @@ async def sync_page():
                 
                 // Find the common root directory (the selected folder)
                 // All files from the same selected folder will share the same directory prefix
-                if (allPaths.length > 0) {
+                if (allDirPaths.length > 0) {
                     // Normalize all paths to lowercase for comparison
-                    const normalizedPaths = allPaths.map(p => p.toLowerCase());
+                    const normalizedPaths = allDirPaths.map(p => p.toLowerCase().replace(/\//g, backslash));
                     
-                    // Find the longest common prefix
+                    // Find the longest common prefix (this is the selected folder)
                     let commonPrefix = normalizedPaths[0];
                     for (let i = 1; i < normalizedPaths.length; i++) {
                         const currentPath = normalizedPaths[i];
@@ -4478,33 +4618,68 @@ async def sync_page():
                             if (commonPrefix[j] === currentPath[j]) {
                                 prefix += commonPrefix[j];
                             } else {
+                                // Stop at directory boundary (backslash)
+                                // Ensure we end at a complete directory boundary
+                                if (j > 0 && (commonPrefix[j-1] === backslash || currentPath[j-1] === backslash)) {
+                                    // Already at boundary, stop here
+                                    break;
+                                }
                                 break;
                             }
                         }
                         commonPrefix = prefix;
                     }
                     
+                    // Ensure common prefix ends at directory boundary (not in the middle of a folder name)
+                    // Find the last backslash in the common prefix
+                    const lastBackslashIndex = commonPrefix.lastIndexOf(backslash);
+                    if (lastBackslashIndex > 0) {
+                        // Cut at the last backslash to get complete directory path
+                        commonPrefix = commonPrefix.substring(0, lastBackslashIndex);
+                    }
+                    
                     // Get the original case from the first path
-                    const firstPath = allPaths[0];
+                    const firstPath = allDirPaths[0];
                     const commonPrefixLength = commonPrefix.length;
-                    let originalCasePrefix = firstPath.substring(0, commonPrefixLength);
+                    let originalCasePrefix = firstPath.substring(0, Math.min(commonPrefixLength, firstPath.length));
+                    
+                    // If common prefix is shorter than first path, ensure we end at directory boundary
+                    if (originalCasePrefix.length < firstPath.length) {
+                        const lastBackslash = originalCasePrefix.lastIndexOf(backslash);
+                        if (lastBackslash > 0) {
+                            originalCasePrefix = originalCasePrefix.substring(0, lastBackslash);
+                        }
+                    }
                     
                     // The common prefix should be the selected folder path
-                    // Example: If files are in "d:\\my\\local\\folder" and "d:\\my\\local\\folder\\subfolder"
-                    // Common prefix = "d:\\my\\local\\folder" (the selected folder)
-                    // Use the common prefix as-is - it IS the full selected folder path
+                    // Example: If files are in "d:\\my\\local\\folder\\sub\\sub2" and "d:\\my\\local\\folder\\sub\\sub2\\sub3"
+                    // Common prefix = "d:\\my\\local\\folder\\sub\\sub2" (the selected folder)
                     folderPath = originalCasePrefix;
                     
-                    // Remove trailing slash if present
-                    if (folderPath.endsWith(backslash) || folderPath.endsWith('/')) {
+                    // Ensure drive letter is uppercase
+                    if (folderPath.match(/^[A-Za-z]:/i)) {
+                        const driveMatch = folderPath.match(/^([A-Za-z]:)/i);
+                        folderPath = driveMatch[1].toUpperCase() + folderPath.substring(2);
+                    }
+                    
+                    // Remove trailing slash if present (but keep drive root like "D:\\")
+                    if (folderPath.length > 3 && (folderPath.endsWith(backslash) || folderPath.endsWith('/'))) {
                         folderPath = folderPath.slice(0, -1);
                     }
                     
-                    // Ensure we have a valid path (at least drive letter + folder)
-                    if (!folderPath || folderPath.length < 3 || !folderPath.includes(backslash)) {
-                        // Fallback: use the shortest path (likely the selected folder)
-                        allPaths.sort((a, b) => a.length - b.length);
-                        folderPath = allPaths[0];
+                    // Validate we have a complete path with drive letter
+                    if (folderPath && folderPath.match(/^[A-Za-z]:/i) && folderPath.length >= 3) {
+                        // We have a valid full path - use it
+                        // folderPath is already set correctly
+                    } else if (allDirPaths.length > 0) {
+                        // Fallback: use the shortest directory path (likely the selected folder root)
+                        allDirPaths.sort((a, b) => a.length - b.length);
+                        folderPath = allDirPaths[0];
+                        // Ensure drive letter is uppercase
+                        if (folderPath.match(/^[A-Za-z]:/i)) {
+                            const driveMatch = folderPath.match(/^([A-Za-z]:)/i);
+                            folderPath = driveMatch[1].toUpperCase() + folderPath.substring(2);
+                        }
                         // Remove trailing slash
                         if (folderPath.endsWith(backslash) || folderPath.endsWith('/')) {
                             folderPath = folderPath.slice(0, -1);
@@ -4559,116 +4734,129 @@ async def sync_page():
                     }
                 }
                 
-                // If no full path available, construct path from available information
-                const file = files[0];
-                
-                if (file.path) {
-                    // Some browsers expose full path (older Chrome/Edge)
-                    // Extract the full directory path (preserve entire structure)
+                // If no full path available from common root, try to get from individual files
+                // Check ALL files for file.path to find the best full path
+                if (!folderPath) {
                     const backslash = String.fromCharCode(92);
-                    const dirPath = file.path.substring(0, 
-                        Math.max(file.path.lastIndexOf(backslash), file.path.lastIndexOf('/')));
-                    if (dirPath) {
-                        // Use the full path from file.path (preserve entire structure)
-                        const pathDriveMatch = dirPath.match(/^([A-Za-z]:)/i);
-                        if (pathDriveMatch) {
-                            // Full path with drive letter - use as-is
-                            folderPath = dirPath;
-                        } else if (detectedDrive) {
-                            // Add drive letter if missing
-                            folderPath = detectedDrive + backslash + dirPath;
-                        } else {
-                            // Use path as-is
-                            folderPath = dirPath;
-                        }
-                    }
-                } else if (file.webkitRelativePath) {
-                    // webkitRelativePath is relative to the SELECTED folder
-                    // Try to get full path from file.path first (most reliable)
-                    const backslash = String.fromCharCode(92);
-                    let fullPathFromFile = '';
-                    let driveLetter = detectedDrive;
-                    let bestPathDepth = 0;
+                    let allFileDirPaths = [];
                     
-                    // Check ALL files for file.path to get the deepest full path
-                    for (let i = 0; i < Math.min(files.length, 50); i++) {
+                    // Collect all directory paths from file.path
+                    for (let i = 0; i < Math.min(files.length, 100); i++) {
                         const f = files[i];
                         if (f.path) {
-                            const driveMatch = f.path.match(/^([A-Za-z]:)/i);
+                            // Debug: log the file path
+                            console.log('[DEBUG] file.path:', f.path);
+                            
+                            // Normalize separators first
+                            let filePath = f.path.replace(/\//g, backslash);
+                            
+                            // Check for drive letter pattern: D: or D:\ or D:/
+                            const driveMatch = filePath.match(/^([A-Za-z]):/i);
                             if (driveMatch) {
-                                driveLetter = driveMatch[1].toUpperCase();
-                                // Extract directory path (full folder path)
-                                const dirPath = f.path.substring(0, 
-                                    Math.max(f.path.lastIndexOf(backslash), f.path.lastIndexOf('/')));
-                                if (dirPath && dirPath.includes(backslash)) {
-                                    // Count path depth - use deepest path (preserves full structure)
-                                    const pathDepth = (dirPath.match(new RegExp(backslash, 'g')) || []).length;
-                                    if (pathDepth > bestPathDepth) {
-                                        fullPathFromFile = dirPath;
-                                        bestPathDepth = pathDepth;
-                                    }
+                                detectedDrive = driveMatch[1].toUpperCase();
+                                
+                                // If path is like "D:books" (without backslash), add it
+                                if (filePath.length > 2 && filePath[2] !== backslash) {
+                                    filePath = filePath.substring(0, 2) + backslash + filePath.substring(2);
+                                }
+                                
+                                // Extract directory path (full folder path containing the file)
+                                const dirPath = filePath.substring(0, 
+                                    Math.max(filePath.lastIndexOf(backslash), filePath.lastIndexOf('/')));
+                                if (dirPath && dirPath.length >= 3) {
+                                    allFileDirPaths.push(dirPath);
+                                    console.log('[DEBUG] extracted dirPath:', dirPath);
                                 }
                             }
                         }
                     }
                     
-                    // If we have a full path from file.path, use it (preserves full structure)
-                    if (fullPathFromFile) {
-                        folderPath = fullPathFromFile;
-                    } else {
-                        // Find the deepest folder structure from all files
-                        // This gives us the full relative path structure within the selected folder
-                        let maxDepth = 0;
-                        let deepestRelativePath = '';
-                        let selectedFolderName = '';
+                    // If we found paths from file.path, find the common root (the selected folder)
+                    if (allFileDirPaths.length > 0) {
+                        // Find common prefix of all directory paths
+                        const normalizedPaths = allFileDirPaths.map(p => p.toLowerCase().replace(/\//g, backslash));
+                        let commonPrefix = normalizedPaths[0];
                         
-                        for (let i = 0; i < Math.min(files.length, 50); i++) {
-                            const f = files[i];
-                            if (f.webkitRelativePath) {
-                                const parts = f.webkitRelativePath.split('/');
-                                if (parts.length > 0 && !selectedFolderName) {
-                                    selectedFolderName = parts[0];
+                        for (let i = 1; i < normalizedPaths.length; i++) {
+                            const currentPath = normalizedPaths[i];
+                            let prefix = '';
+                            const minLength = Math.min(commonPrefix.length, currentPath.length);
+                            for (let j = 0; j < minLength; j++) {
+                                if (commonPrefix[j] === currentPath[j]) {
+                                    prefix += commonPrefix[j];
+                                } else {
+                                    break;
                                 }
-                                // Remove the filename (last part) to get the folder path
-                                if (parts.length > 1) {
-                                    const folderParts = parts.slice(0, -1);
-                                    const folderPath = folderParts.join(backslash);
-                                    if (folderParts.length > maxDepth) {
-                                        maxDepth = folderParts.length;
-                                        deepestRelativePath = folderPath;
-                                    }
-                                }
+                            }
+                            // Ensure we end at directory boundary
+                            const lastBackslash = prefix.lastIndexOf(backslash);
+                            if (lastBackslash > 0) {
+                                prefix = prefix.substring(0, lastBackslash);
+                            }
+                            commonPrefix = prefix;
+                        }
+                        
+                        // Get original case from first path
+                        const firstPath = allFileDirPaths[0];
+                        const commonPrefixLength = commonPrefix.length;
+                        let originalCasePrefix = firstPath.substring(0, Math.min(commonPrefixLength, firstPath.length));
+                        
+                        // Ensure we end at directory boundary
+                        if (originalCasePrefix.length < firstPath.length) {
+                            const lastBackslash = originalCasePrefix.lastIndexOf(backslash);
+                            if (lastBackslash > 0) {
+                                originalCasePrefix = originalCasePrefix.substring(0, lastBackslash);
                             }
                         }
                         
-                        // Construct full path: drive + folder structure
-                        if (driveLetter) {
-                            if (deepestRelativePath) {
-                                // Use drive + relative path structure
-                                folderPath = driveLetter + backslash + deepestRelativePath;
-                            } else if (selectedFolderName) {
-                                // Just drive + folder name
-                                folderPath = driveLetter + backslash + selectedFolderName;
-                            } else {
-                                // Just drive
-                                folderPath = driveLetter + backslash;
-                            }
-                        } else {
-                            // No drive letter - use just the path structure
-                            if (deepestRelativePath) {
-                                folderPath = deepestRelativePath;
-                            } else if (selectedFolderName) {
-                                folderPath = selectedFolderName;
-                            }
+                        folderPath = originalCasePrefix;
+                        
+                        // Ensure drive letter is uppercase
+                        if (folderPath.match(/^[A-Za-z]:/i)) {
+                            const driveMatch = folderPath.match(/^([A-Za-z]:)/i);
+                            folderPath = driveMatch[1].toUpperCase() + folderPath.substring(2);
                         }
                     }
-                } else {
-                    // Fallback: Use detected drive or folder name only
-                    if (detectedDrive) {
-                        const backslash = String.fromCharCode(92);
-                        folderPath = detectedDrive + backslash;
+                }
+                
+                // If still no path found, try webkitRelativePath (but it only gives relative path)
+                if (!folderPath && files[0] && files[0].webkitRelativePath) {
+                    // If file.path is not available, webkitRelativePath only gives us relative path
+                    // We cannot determine the full path from webkitRelativePath alone
+                    // So we need to ask the user for the full path
+                    const firstFile = files[0];
+                    const webkitPath = firstFile.webkitRelativePath || '';
+                    const parts = webkitPath.split('/');
+                    const selectedFolderName = parts.length > 0 ? parts[0] : 'Selected Folder';
+                    
+                    // Show prompt to get full path
+                    const suggestedDrive = detectedDrive || 'D';
+                    const suggestedPath = suggestedDrive + backslash + 'folder' + backslash + 'subfolder1' + backslash + selectedFolderName;
+                    
+                    const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
+                                         'Folder name: ' + selectedFolderName + String.fromCharCode(10) + 
+                                         'Example: ' + suggestedPath;
+                    const userPath = prompt(promptMessage, suggestedPath);
+                    
+                    if (userPath && userPath.trim()) {
+                        folderPath = userPath.trim();
                     } else {
-                        folderPath = '';
+                        // User cancelled - use folder name only as fallback (will be validated later)
+                        folderPath = selectedFolderName;
+                    }
+                } else {
+                    // No file.path and no webkitRelativePath - show prompt
+                    const suggestedDrive = detectedDrive || 'D';
+                    const suggestedPath = suggestedDrive + backslash + 'folder' + backslash + 'subfolder';
+                    
+                    const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
+                                         'Example: ' + suggestedPath;
+                    const userPath = prompt(promptMessage, suggestedPath);
+                    
+                    if (userPath && userPath.trim()) {
+                        folderPath = userPath.trim();
+                    } else {
+                        folderPath = detectedDrive ? detectedDrive + backslash : '';
                     }
                 }
                 
@@ -4748,12 +4936,153 @@ async def sync_page():
                     
                     // Validate final path has drive letter
                     if (!normalizedPath.match(/^[A-Za-z]:/i) && normalizedPath.length > 0) {
-                        showMessage('Warning: Path does not include drive letter. Please enter full path manually.', 'error');
+                        // Try to add detected drive letter if available
+                        if (detectedDrive) {
+                            const backslash = String.fromCharCode(92);
+                            normalizedPath = detectedDrive + backslash + normalizedPath;
+                            showMessage('Added drive letter: ' + normalizedPath, 'info');
+                        } else {
+                            // Show prompt dialog to get full path with drive letter
+                            const backslash = String.fromCharCode(92);
+                            const folderName = normalizedPath.split(backslash).pop() || normalizedPath.split('/').pop() || normalizedPath;
+                            const suggestedDrive = 'D';
+                            const suggestedPath = suggestedDrive + backslash + normalizedPath.replace(/\\//g, backslash);
+                            
+                            const promptMessage = 'Please enter the full path including drive letter:' + String.fromCharCode(10) + 
+                                                 'Folder name: ' + folderName + String.fromCharCode(10) + 
+                                                 'Example: ' + suggestedPath;
+                            const userPath = prompt(promptMessage, suggestedPath);
+                            
+                            if (userPath && userPath.trim()) {
+                                normalizedPath = userPath.trim();
+                                // Re-check drive letter after user input
+                                if (!normalizedPath.match(/^[A-Za-z]:/i)) {
+                                    showMessage('Warning: Path should include drive letter (e.g., D:\\\\folder). Please enter manually.', 'error');
+                                    input.value = normalizedPath; // Still set it so user can see
+                                    return;
+                                }
+                            } else {
+                                showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                                input.value = normalizedPath; // Still set it so user can see
+                                return;
+                            }
+                        }
                     }
                     
-                    // Save to input
-                    input.value = normalizedPath;
-                    showMessage('Folder path saved: ' + normalizedPath, 'success');
+                    // Validate and normalize path using backend
+                    await validateAndSetPath(normalizedPath, input, inputId);
+                } else {
+                    // No folder path found - show prompt to enter full path
+                    const backslash = String.fromCharCode(92);
+                    const folderName = files[0]?.webkitRelativePath?.split('/')[0] || files[0]?.name || 'Selected Folder';
+                    const suggestedDrive = detectedDrive || 'D';
+                    const suggestedPath = suggestedDrive + backslash + folderName;
+                    
+                    const promptMessage = 'Please enter the full path to the selected folder:' + String.fromCharCode(10) + 
+                                         'Folder name: ' + folderName + String.fromCharCode(10) + 
+                                         'Example: ' + suggestedPath;
+                    const userPath = prompt(promptMessage, suggestedPath);
+                    
+                    if (userPath && userPath.trim()) {
+                        await validateAndSetPath(userPath.trim(), input, inputId);
+                    } else {
+                        showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                    }
+                }
+            }
+            
+            // Helper function to validate and normalize path using backend
+            async function validateAndSetPath(path, input, inputId) {
+                if (!path || !path.trim()) {
+                    showMessage('No path provided. Please enter the full folder path manually.', 'error');
+                    return;
+                }
+                
+                const currentToken = localStorage.getItem('access_token');
+                if (!currentToken) {
+                    showMessage('Not authenticated. Please login again.', 'error');
+                    window.location.href = '/login';
+                    return;
+                }
+                
+                // Check if path has drive letter before sending to backend
+                const pathTrimmed = path.trim();
+                const hasDriveLetter = pathTrimmed.match(/^[A-Za-z]:/i);
+                
+                if (!hasDriveLetter && pathTrimmed.length > 0) {
+                    // Path doesn't have drive letter - show prompt to get full path
+                    const backslash = String.fromCharCode(92);
+                    const folderName = pathTrimmed.split(backslash).pop() || pathTrimmed.split('/').pop() || pathTrimmed;
+                    const suggestedDrive = 'D';
+                    const suggestedPath = suggestedDrive + backslash + pathTrimmed.replace(/\\//g, backslash);
+                    
+                    const promptMessage = 'Please enter the full path including drive letter:' + String.fromCharCode(10) + 
+                                         'Current path: ' + pathTrimmed + String.fromCharCode(10) + 
+                                         'Example: ' + suggestedPath;
+                    const userPath = prompt(promptMessage, suggestedPath);
+                    
+                    if (userPath && userPath.trim()) {
+                        // Use user-provided path
+                        path = userPath.trim();
+                    } else {
+                        // User cancelled - still try to validate the original path
+                        // Backend might be able to handle it if it's a relative path
+                        showMessage('Using entered path. If path is invalid, please enter full path manually.', 'warning');
+                    }
+                }
+                
+                try {
+                    // Ensure path is properly formatted before sending
+                    let pathToSend = path.trim();
+                    
+                    // Fix common issues with Windows paths
+                    // If path looks like "D\books" (missing colon), try to fix it
+                    const backslash = String.fromCharCode(92);
+                    const pathMatch = pathToSend.match(/^([A-Za-z])([\\/])(.+)$/);
+                    if (pathMatch && pathMatch[1] && pathMatch[2] && pathMatch[3]) {
+                        // Path is like "D\books" - add colon: "D:\books"
+                        pathToSend = pathMatch[1].toUpperCase() + ':' + backslash + pathMatch[3];
+                        console.log('[DEBUG] Fixed path format:', path.trim(), '->', pathToSend);
+                    }
+                    
+                    // Call backend to validate and normalize path
+                    const response = await fetch('/api/sync/validate-path', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': 'Bearer ' + currentToken
+                        },
+                        body: JSON.stringify({ path: pathToSend })
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        if (result.success && result.normalized_path) {
+                            // Use the normalized path from backend
+                            input.value = result.normalized_path;
+                            showMessage('Folder path saved: ' + result.normalized_path, 'success');
+                        } else {
+                            showMessage('Path validation failed. Please enter path manually.', 'error');
+                            input.value = path.trim(); // Still set it so user can see
+                        }
+                    } else {
+                        const error = await response.json();
+                        const errorDetail = error.detail || 'Unknown error';
+                        
+                        // If path doesn't exist or is not a directory, show helpful message
+                        if (errorDetail.includes('does not exist') || errorDetail.includes('not a directory')) {
+                            showMessage('Path validation error: ' + errorDetail + '. Please check the path and try again.', 'error');
+                        } else {
+                            showMessage('Path validation error: ' + errorDetail + '. Please enter path manually.', 'error');
+                        }
+                        // Still set the path so user can see what they selected
+                        input.value = path.trim();
+                    }
+                } catch (error) {
+                    console.error('Error validating path:', error);
+                    showMessage('Could not validate path. Using entered path: ' + path.trim(), 'warning');
+                    // Still set the path so user can see what they selected
+                    input.value = path.trim();
                 }
             }
             
@@ -4916,9 +5245,8 @@ async def sync_page():
                                 showMessage('Warning: Path does not include drive letter. Please enter full path like D:\\\\folder', 'error');
                             }
                             
-                            // Save to input
-                            input.value = normalizedPath;
-                            showMessage('Folder path saved: ' + normalizedPath, 'success');
+                            // Validate and normalize path using backend
+                            await validateAndSetPath(normalizedPath, input, inputId);
                         }
                         return;
                     } catch (err) {
@@ -4954,9 +5282,9 @@ async def sync_page():
                     folderPicker.style.height = '1px';
                     
                     // Add change handler
-                    folderPicker.addEventListener('change', function(e) {
+                    folderPicker.addEventListener('change', async function(e) {
                         if (e.target.files && e.target.files.length > 0) {
-                            handleFolderSelection(e.target.files, inputId);
+                            await handleFolderSelection(e.target.files, inputId);
                         }
                         // Clean up
                         setTimeout(() => {
