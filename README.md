@@ -251,8 +251,21 @@ python -m app.cli stats
 ## API Usage
 
 Start the FastAPI server:
+
+**Using default settings:**
 ```bash
 uvicorn app.main:app --reload
+```
+
+**Using environment variables from .env:**
+```bash
+# The app will automatically read HOST and PORT from .env
+uvicorn app.main:app --reload --host ${HOST:-0.0.0.0} --port ${PORT:-8000}
+```
+
+Or simply:
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Then access:
@@ -358,6 +371,7 @@ DocSync/
 ├── requirements.txt         # Python dependencies
 ├── pyproject.toml          # Project configuration
 ├── README.md               # This file
+├── .env.example            # Environment variables template
 ├── PROJECT_DESCRIPTION_RU.md # Russian project description with screens
 ├── ENDPOINTS_GUIDE.md      # API endpoints guide
 ├── GPT_PROMPT.md          # Project generation prompt
@@ -407,12 +421,47 @@ pytest --cov=app --cov-report=html
 
 ## Configuration
 
-Create a `.env` file to customize settings:
+### Environment Variables
+
+Copy `.env.example` to `.env` and update values for your environment:
+
+```bash
+cp .env.example .env
 ```
+
+Then edit `.env` with your settings:
+
+**For Local Development:**
+```env
+HOST=127.0.0.1
+PORT=8000
 DATABASE_URL=sqlite:///docu_sync.db
-MAX_FILE_SIZE_MB=100
-ENABLE_FULLTEXT_SEARCH=true
+ENVIRONMENT=development
 ```
+
+**For Docker/Server Deployment:**
+```env
+HOST=0.0.0.0
+PORT=8000
+DATABASE_URL=postgresql://user:password@db:5432/docu_sync
+API_URL=http://your-domain.com
+ENVIRONMENT=production
+SECRET_KEY=your-secret-key-here  # CHANGE THIS!
+DEFAULT_PASSWORD=your-secure-password  # CHANGE THIS!
+```
+
+**Key Configuration Variables:**
+- `HOST`: Bind address (0.0.0.0 for Docker/server, 127.0.0.1 for local)
+- `PORT`: Server port (default: 8000)
+- `DATABASE_URL`: Database connection string
+  - SQLite: `sqlite:///docu_sync.db`
+  - PostgreSQL: `postgresql://user:password@host:5432/dbname`
+- `API_URL`: API base URL (for Docker/proxy setups)
+- `ENVIRONMENT`: `development` or `production`
+- `SECRET_KEY`: JWT secret key (generate with: `python -c "import secrets; print(secrets.token_hex(32))"`)
+- `DEFAULT_USERNAME` / `DEFAULT_PASSWORD`: Default admin credentials (CHANGE IN PRODUCTION!)
+
+See `.env.example` for all available configuration options.
 
 ## Performance Tips
 
